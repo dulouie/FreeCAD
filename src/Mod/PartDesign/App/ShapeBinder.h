@@ -42,6 +42,7 @@ namespace PartDesign
 class PartDesignExport ShapeBinder : public Part::Feature
 {
     PROPERTY_HEADER(PartDesign::ShapeBinder);
+    bool wasExecuted = FALSE;
 
 public:
     ShapeBinder();

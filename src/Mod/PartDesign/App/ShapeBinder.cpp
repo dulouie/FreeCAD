@@ -29,6 +29,7 @@
 
 #include "ShapeBinder.h"
 #include <Mod/Part/App/TopoShape.h>
+#include <Body.h>
 
 #ifndef M_PI
 #define M_PI       3.14159265358979323846
@@ -65,12 +66,33 @@ App::DocumentObjectExecReturn* ShapeBinder::execute(void) {
         std::vector<std::string> subs;
 
         ShapeBinder::getFilteredReferences(&Support, obj, subs);
-        //if we have a link we rebuild the shape, but we change nothing if we are a simple copy
+        //if we have a link we rebuild the shape and set placement to local CS
         if(obj) {
             Part::TopoShape shape = ShapeBinder::buildShapeFromReferences(obj, subs);
             Base::Placement placement(shape.getTransform());
-            Shape.setValue(shape);
-            Placement.setValue(placement);
+
+            PartDesign::Body* body = PartDesign::Body::findBodyOf(this);
+            Base::Placement placementBody = body->Placement.getValue();
+            Base::Placement placementRef;
+
+            if (obj->getTypeId().isDerivedFrom(PartDesign::Body::getClassTypeId())){
+                placementRef = obj->Placement.getValue();
+                placement = placementBody.inverse() * placementRef;   
+            }
+            else if (obj->getTypeId().isDerivedFrom(Part::Feature::getClassTypeId())){
+                PartDesign::Body* bodyRef = PartDesign::Body::findBodyOf(obj);
+                placementRef = bodyRef->Placement.getValue();
+                placement *= placementBody.inverse() * placementRef;     
+            }
+            else {
+                throw Base::Exception("Shapbinder reference must be a Feature or Body.");
+            }
+                                  
+            if(wasExecuted==FALSE){
+                Placement.setValue(placement);
+                wasExecuted = TRUE;
+            }
+        Shape.setValue(shape);
         }
     }
 
