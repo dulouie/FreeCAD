@@ -335,6 +335,24 @@ private:
     SoMouseButtonEvent mouseDownConsumedEvent;
 };
 
+class GuiExport OnshapeNavigationStyle : public UserNavigationStyle {
+    typedef UserNavigationStyle inherited;
+
+    TYPESYSTEM_HEADER();
+
+public:
+    OnshapeNavigationStyle();
+    ~OnshapeNavigationStyle();
+    const char* mouseButtons(ViewerMode);
+
+protected:
+    SbBool processSoEvent(const SoEvent * const ev);
+
+private:
+    SbBool lockButton1;
+    SoMouseButtonEvent mouseDownConsumedEvent;
+};
+
 class GuiExport MayaGestureNavigationStyle : public UserNavigationStyle {
     typedef UserNavigationStyle inherited;
 
