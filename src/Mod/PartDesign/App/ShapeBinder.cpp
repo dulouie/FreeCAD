@@ -71,18 +71,18 @@ App::DocumentObjectExecReturn* ShapeBinder::execute(void) {
             Part::TopoShape shape = ShapeBinder::buildShapeFromReferences(obj, subs);
             Base::Placement placement(shape.getTransform());
 
-            PartDesign::Body* body = PartDesign::Body::findBodyOf(this);
-            Base::Placement placementBody = body->Placement.getValue();
-            Base::Placement placementRef;
+            PartDesign::Body* bodyA = PartDesign::Body::findBodyOf(this);
+            Base::Placement placementA = bodyA->Placement.getValue();
 
+            Base::Placement placementB;
             if (obj->getTypeId().isDerivedFrom(PartDesign::Body::getClassTypeId())){
-                placementRef = obj->Placement.getValue();
-                placement = placementBody.inverse() * placementRef;   
+                placementB = obj->Placement.getValue();
+                placement = placementA.inverse() * placementB;   
             }
             else if (obj->getTypeId().isDerivedFrom(Part::Feature::getClassTypeId())){
-                PartDesign::Body* bodyRef = PartDesign::Body::findBodyOf(obj);
-                placementRef = bodyRef->Placement.getValue();
-                placement *= placementBody.inverse() * placementRef;     
+                PartDesign::Body* bodyB = PartDesign::Body::findBodyOf(obj);
+                placementB = bodyB->Placement.getValue();
+                placement *= placementA.inverse() * placementB;     
             }
             else {
                 throw Base::Exception("Shapbinder reference must be a Feature or Body.");
