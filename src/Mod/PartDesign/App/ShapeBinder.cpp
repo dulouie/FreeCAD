@@ -66,14 +66,16 @@ App::DocumentObjectExecReturn* ShapeBinder::execute(void) {
         std::vector<std::string> subs;
 
         ShapeBinder::getFilteredReferences(&Support, obj, subs);
-        //if we have a link we rebuild the shape and set placement to local CS
+        //if we have a link we rebuild the shape and set placement
         if(obj) {
             Part::TopoShape shape = ShapeBinder::buildShapeFromReferences(obj, subs);
             Base::Placement placement(shape.getTransform());
 
+            // get placement of current body
             PartDesign::Body* bodyShapebinder = PartDesign::Body::findBodyOf(this);
             Base::Placement placementShapebinder = bodyShapebinder->Placement.getValue();
 
+            //get placement of selected reference and compute new placement
             Base::Placement placementReference;
             if (obj->getTypeId().isDerivedFrom(PartDesign::Body::getClassTypeId())){
                 placementReference = obj->Placement.getValue();
@@ -81,13 +83,14 @@ App::DocumentObjectExecReturn* ShapeBinder::execute(void) {
             }
             else if (obj->getTypeId().isDerivedFrom(Part::Feature::getClassTypeId())){
                 PartDesign::Body* bodyReference = PartDesign::Body::findBodyOf(obj);
-                placementB = bodyReference->Placement.getValue();
+                placementReference = bodyReference->Placement.getValue();
                 placement *= placementShapebinder.inverse() * placementReference;     
             }
             else {
                 throw Base::Exception("Shapbinder reference must be a Feature or Body.");
             }
-                                  
+            
+            // make placement permanent
             if(wasExecuted==FALSE){
                 Placement.setValue(placement);
                 wasExecuted = TRUE;
