@@ -216,6 +216,14 @@ void CmdPartDesignBody::activated(int iMsg)
                     bodyName.c_str(), baseFeature->getNameInDocument());
         }
     }
+    
+    // calculate random shapecolor for body
+    float fMax = (float)RAND_MAX;
+    float fRed = (float)rand()/fMax;
+    float fGrn = (float)rand()/fMax;
+    float fBlu = (float)rand()/fMax;
+    doCommand(Gui, "Gui.activeDocument().getObject(\"%s\").ShapeColor=(%.2f,%.2f,%.2f)",bodyName.c_str() , fRed, fGrn, fBlu);
+    
     addModule(Gui,"PartDesignGui"); // import the Gui module only once a session
     doCommand(Gui::Command::Gui, "Gui.activeView().setActiveObject('%s', App.activeDocument().%s)",
             PDBODYKEY, bodyName.c_str());
