@@ -199,6 +199,13 @@ void CmdPartDesignBody::activated(int iMsg)
 
     std::string bodyName = getUniqueObjectName("Body");
 
+    // calculate random shapecolor for body
+    float fMax = (float)RAND_MAX;
+    float fRed = (float)rand()/fMax;
+    float fGrn = (float)rand()/fMax;
+    float fBlu = (float)rand()/fMax;
+    doCommand(Gui, "Gui.activeDocument().getObject(\"%s\").ShapeColor=(%.2f,%.2f,%.2f)",bodyName.c_str() , fRed, fGrn, fBlu);
+
     // add the Body feature itself, and make it active
     doCommand(Doc,"App.activeDocument().addObject('PartDesign::Body','%s')", bodyName.c_str());
     if (baseFeature) {
