@@ -947,7 +947,7 @@ class LinkLabel : public QWidget
     Q_OBJECT
 
 public:
-    LinkLabel (QWidget * parent = 0);
+    LinkLabel (QWidget * parent = 0, bool xlink = false);
     virtual ~LinkLabel();
     void setPropertyLink(const QStringList& o);
     QStringList propertyLink() const;
@@ -966,6 +966,7 @@ private:
     QLabel* label;
     QPushButton* editButton;
     QStringList link;
+    bool isXLink;
 };
 
 /**
@@ -988,6 +989,9 @@ protected:
 
 protected:
     PropertyLinkItem();
+
+private:
+    mutable bool isXLink;
 };
 
 class LinkListLabel : public QWidget

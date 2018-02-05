@@ -22,6 +22,7 @@
 
 #include "PreCompiled.h"
 
+#include <Base/MatrixPy.h>
 #include "DocumentObject.h"
 #include "Document.h"
 #include "Expression.h"
@@ -132,8 +133,17 @@ PyObject*  DocumentObjectPy::supportedProperties(PyObject *args)
 
 PyObject*  DocumentObjectPy::touch(PyObject * args)
 {
-    if (!PyArg_ParseTuple(args, ""))     // convert args: Python->C 
+    char *propName = 0;
+    if (!PyArg_ParseTuple(args, "|s",&propName))     // convert args: Python->C 
         return NULL;                    // NULL triggers exception 
+    if(propName) {
+        auto prop = getDocumentObjectPtr()->getPropertyByName(propName);
+        if(!prop) 
+            throw Py::RuntimeError("Property not found");
+        prop->touch();
+        Py_Return;
+    }
+
     getDocumentObjectPtr()->touch();
     Py_Return;
 }
@@ -236,6 +246,22 @@ Py::List DocumentObjectPy::getInListRecursive(void) const
     return ret;    
 }
 
+Py::List DocumentObjectPy::getInListEx(void) const
+{
+    Py::List ret;
+    for(auto obj : getDocumentObjectPtr()->getInListEx(false))
+        ret.append(Py::Object(obj->getPyObject(), true));
+    return ret;    
+}
+
+Py::List DocumentObjectPy::getInListExRecrusive(void) const
+{
+    Py::List ret;
+    for(auto obj : getDocumentObjectPtr()->getInListEx(true))
+        ret.append(Py::Object(obj->getPyObject(), true));
+    return ret;    
+}
+
 Py::List DocumentObjectPy::getOutList(void) const
 {
     Py::List ret;
@@ -313,16 +339,212 @@ PyObject*  DocumentObjectPy::setExpression(PyObject * args)
 
 PyObject*  DocumentObjectPy::recompute(PyObject *args)
 {
-    if (!PyArg_ParseTuple(args, ""))
+    PyObject *recursive=Py_False;
+    if (!PyArg_ParseTuple(args, "|O",&recursive))
         return NULL;
 
     try {
-        bool ok = getDocumentObjectPtr()->recomputeFeature();
+        bool ok = getDocumentObjectPtr()->recomputeFeature(PyObject_IsTrue(recursive));
         return Py_BuildValue("O", (ok ? Py_True : Py_False));
     }
     catch (const Base::Exception& e) {
         throw Py::RuntimeError(e.what());
     }
+}
+
+PyObject*  DocumentObjectPy::getSubObject(PyObject *args, PyObject *keywds)
+{
+    PyObject *obj;
+    short retType = 0;
+    PyObject *pyMat = Py_None;
+    PyObject *doTransform = Py_True;
+    short depth = 0;
+    static char *kwlist[] = {"subname","retType","matrix","transform","depth", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, keywds, "O|hOOh", kwlist,
+                &obj,&retType,&pyMat,&doTransform,&depth))
+        return 0;
+
+    if(retType<0 || retType>2) {
+        PyErr_SetString(PyExc_TypeError, "invalid retType, can only be integer 0, 1 or 2");
+        return 0;
+    }
+
+    std::vector<std::string> subs;
+    bool single=true;
+    if (PyUnicode_Check(obj)) {
+#if PY_MAJOR_VERSION >= 3
+        string = PyUnicode_AsUTF8(obj);
+#else
+        PyObject* unicode = PyUnicode_AsUTF8String(obj);
+        subs.push_back(PyString_AsString(unicode));
+        Py_DECREF(unicode);
+    }
+    else if (PyString_Check(obj)) {
+        subs.push_back(PyString_AsString(obj));
+#endif
+    } else if (PySequence_Check(obj)) {
+        single=false;
+        Py::Sequence shapeSeq(obj);
+        for (Py::Sequence::iterator it = shapeSeq.begin(); it != shapeSeq.end(); ++it) {
+            PyObject* item = (*it).ptr();
+            if (PyUnicode_Check(item)) {
+#if PY_MAJOR_VERSION >= 3
+                string = PyUnicode_AsUTF8(item);
+#else
+                PyObject* unicode = PyUnicode_AsUTF8String(item);
+                subs.push_back(PyString_AsString(unicode));
+                Py_DECREF(unicode);
+            }
+            else if (PyString_Check(item)) {
+                subs.push_back(PyString_AsString(item));
+#endif
+            }else{
+                PyErr_SetString(PyExc_TypeError, "non-string object in sequence");
+                return 0;
+            }
+        }
+    }else{
+        PyErr_SetString(PyExc_TypeError, "subname must be either a string or sequence of string");
+        return 0;
+    }
+
+    bool transform = PyObject_IsTrue(doTransform);
+
+    struct SubInfo {
+        Py::Object obj;
+        Py::Object pyObj;
+        Base::Matrix4D mat;
+        SubInfo(const Base::Matrix4D &mat):mat(mat){}
+    };
+
+    Base::Matrix4D mat;
+    if(pyMat!=Py_None) {
+        if(!PyObject_TypeCheck(pyMat,&Base::MatrixPy::Type)) {
+            PyErr_SetString(PyExc_TypeError, "expect argument 'matrix' to be of type Base.Matrix");
+            return 0;
+        }
+        mat = *static_cast<Base::MatrixPy*>(pyMat)->getMatrixPtr();
+    }
+
+    std::vector<SubInfo> ret;
+    for(const auto &sub : subs) {
+        ret.emplace_back(mat);
+        auto &info = ret.back();
+        PyObject *pyObj = 0;
+        auto obj = getDocumentObjectPtr()->getSubObject(
+                sub.c_str(),retType==1?0:&pyObj,&info.mat,transform,depth);
+        if(pyObj)
+            info.pyObj = Py::Object(pyObj,true);
+        if(obj) 
+            info.obj = Py::Object(obj->getPyObject(),true);
+    }
+    if(ret.empty())
+        Py_Return;
+
+    if(single) {
+        if(retType==0)
+            return Py::new_reference_to(ret[0].pyObj);
+        else if(retType==1 && pyMat==Py_None)
+            return Py::new_reference_to(ret[0].obj);
+        Py::Tuple rret(retType==1?2:3);
+        rret.setItem(0,ret[0].obj);
+        rret.setItem(1,Py::Object(new Base::MatrixPy(ret[0].mat)));
+        if(retType!=1)
+            rret.setItem(2,ret[0].pyObj);
+        return Py::new_reference_to(rret);
+    }
+    Py::Tuple tuple(ret.size());
+    for(size_t i=0;i<ret.size();++i) {
+        if(retType==0)
+            tuple.setItem(i,ret[i].pyObj);
+        else if(retType==1 && pyMat==Py_None)
+            tuple.setItem(i,ret[i].obj);
+        else {
+            Py::Tuple rret(retType==1?2:3);
+            rret.setItem(0,ret[i].obj);
+            rret.setItem(1,Py::Object(new Base::MatrixPy(ret[i].mat)));
+            if(retType!=1)
+                rret.setItem(2,ret[i].pyObj);
+            tuple.setItem(i,rret);
+        }
+    }
+    return Py::new_reference_to(tuple);
+}
+
+PyObject*  DocumentObjectPy::getSubObjects(PyObject *args) {
+    if (!PyArg_ParseTuple(args, ""))
+        return NULL;
+
+    auto names = getDocumentObjectPtr()->getSubObjects();
+    Py::Tuple pyObjs(names.size());
+    for(size_t i=0;i<names.size();++i)
+        pyObjs.setItem(i,Py::String(names[i]));
+    return Py::new_reference_to(pyObjs);
+}
+
+PyObject*  DocumentObjectPy::getLinkedObject(PyObject *args, PyObject *keywds)
+{
+    PyObject *recursive = Py_True;
+    PyObject *pyMat = Py_None;
+    PyObject *transform = Py_True;
+    short depth = 0;
+    static char *kwlist[] = {"recursive","matrix","transform","depth", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, keywds, "|OOOh", kwlist,
+                &recursive,&pyMat,&transform,&depth))
+        return NULL;
+
+    Base::Matrix4D _mat;
+    Base::Matrix4D *mat = 0;
+    if(pyMat!=Py_None) {
+        if(!PyObject_TypeCheck(pyMat,&Base::MatrixPy::Type)) {
+            PyErr_SetString(PyExc_TypeError, "expect argument 'matrix' to be of type Base.Matrix");
+            return 0;
+        }
+        _mat = *static_cast<Base::MatrixPy*>(pyMat)->getMatrixPtr();
+        mat = &_mat;
+    }
+    auto linked = getDocumentObjectPtr()->getLinkedObject(
+            PyObject_IsTrue(recursive), mat, PyObject_IsTrue(transform),depth);
+    if(!linked)
+        linked = getDocumentObjectPtr();
+    auto pyObj = Py::Object(linked->getPyObject(),true);
+    if(mat) {
+        Py::Tuple ret(2);
+        ret.setItem(0,pyObj);
+        ret.setItem(1,Py::Object(new Base::MatrixPy(*mat)));
+        return Py::new_reference_to(ret);
+    }
+    return Py::new_reference_to(pyObj);
+}
+
+PyObject*  DocumentObjectPy::isElementVisible(PyObject *args)
+{
+    char *element = 0;
+    if (!PyArg_ParseTuple(args, "s", &element))
+        return NULL;
+    PY_TRY {
+        return Py_BuildValue("h", getDocumentObjectPtr()->isElementVisible(element));
+    } PY_CATCH;
+}
+
+PyObject*  DocumentObjectPy::setElementVisible(PyObject *args)
+{
+    char *element = 0;
+    PyObject *visible = Py_True;
+    if (!PyArg_ParseTuple(args, "s|O", &element,&visible))
+        return NULL;
+    PY_TRY {
+        return Py_BuildValue("h", getDocumentObjectPtr()->setElementVisible(element,PyObject_IsTrue(visible)));
+    } PY_CATCH;
+}
+
+PyObject*  DocumentObjectPy::hasChildElement(PyObject *args)
+{
+    if (!PyArg_ParseTuple(args, ""))
+        return NULL;
+    PY_TRY {
+        return Py_BuildValue("O", getDocumentObjectPtr()->hasChildElement()?Py_True:Py_False);
+    } PY_CATCH;
 }
 
 PyObject*  DocumentObjectPy::getParentGroup(PyObject *args)
@@ -355,6 +577,16 @@ PyObject*  DocumentObjectPy::getParentGeoFeatureGroup(PyObject *args)
             return Py_None;
         }
         return grp->getPyObject();
+    }
+    catch (const Base::Exception& e) {
+        throw Py::RuntimeError(e.what());
+    }
+}
+
+Py::Boolean DocumentObjectPy::getMustExecute() const
+{
+    try {
+        return Py::Boolean(getDocumentObjectPtr()->mustExecute()?true:false);
     }
     catch (const Base::Exception& e) {
         throw Py::RuntimeError(e.what());
@@ -402,6 +634,11 @@ int DocumentObjectPy::setCustomAttributes(const char* attr, PyObject *obj)
     try {
         Property* prop = getDocumentObjectPtr()->getDynamicPropertyByName(attr);
         if (prop) {
+            if(prop->testStatus(Property::Immutable)) {
+                std::stringstream s;
+                s << "'DocumentObject' attribute '" << attr << "' is read-only"; 
+                throw Py::AttributeError(s.str());
+            }
             prop->setPyObject(obj);
             return 1;
         }
@@ -416,7 +653,9 @@ int DocumentObjectPy::setCustomAttributes(const char* attr, PyObject *obj)
         s << "Attribute (Name: " << attr << ") error: '" << exc.what() << "' ";
         throw Py::AttributeError(s.str());
     }
-    catch (...) {
+    catch (Py::AttributeError &) {
+        throw;
+    }catch (...) {
         std::stringstream s;
         s << "Unknown error in attribute " << attr;
         throw Py::AttributeError(s.str());
@@ -426,8 +665,9 @@ int DocumentObjectPy::setCustomAttributes(const char* attr, PyObject *obj)
     Property *prop = getDocumentObjectPtr()->getPropertyByName(attr);
     if (prop) {
         // Read-only attributes must not be set over its Python interface
-        short Type =  getDocumentObjectPtr()->getPropertyType(prop);
-        if (Type & Prop_ReadOnly) {
+        if(prop->testStatus(Property::Immutable) ||
+           (getDocumentObjectPtr()->getPropertyType(prop) & Prop_ReadOnly))
+        {
             std::stringstream s;
             s << "'DocumentObject' attribute '" << attr << "' is read-only"; 
             throw Py::AttributeError(s.str());

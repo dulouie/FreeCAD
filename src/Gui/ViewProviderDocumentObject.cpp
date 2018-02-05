@@ -30,10 +30,16 @@
 # include <Inventor/nodes/SoDrawStyle.h>
 # include <Inventor/nodes/SoMaterial.h>
 # include <Inventor/nodes/SoSeparator.h>
+# include <Inventor/nodes/SoSwitch.h>
+# include <Inventor/nodes/SoTransform.h>
+# include <Inventor/actions/SoGetBoundingBoxAction.h>
+# include <Inventor/SoPickedPoint.h>
+# include <Inventor/SoFullPath.h>
 #endif
 
 /// Here the FreeCAD includes sorted by Base,App,Gui......
 #include <Base/Console.h>
+#include <Base/BoundBox.h>
 #include <App/Material.h>
 #include <App/DocumentObjectGroup.h>
 #include <App/Origin.h>
@@ -42,6 +48,8 @@
 #include "Selection.h"
 #include "MainWindow.h"
 #include "MDIView.h"
+#include "View3DInventor.h"
+#include "View3DInventorViewer.h"
 #include "TaskView/TaskAppearance.h"
 #include "ViewProviderDocumentObject.h"
 #include "ViewProviderExtension.h"
@@ -58,6 +66,15 @@ ViewProviderDocumentObject::ViewProviderDocumentObject()
 {
     ADD_PROPERTY(DisplayMode,((long)0));
     ADD_PROPERTY(Visibility,(true));
+    ADD_PROPERTY(ShowInTree,(true));
+
+    static const char* OnTopEnum[]= {"Disabled","Enabled","Object","Element",NULL};
+    ADD_PROPERTY(OnTopWhenSelected,((long int)0));
+    ADD_PROPERTY_TYPE(OnTopWhenSelected,((long int)0), "Base", App::Prop_None, 
+            "Enabled: Display the object on top of any other object when selected\n"
+            "Object: On top only if the whole object is selected\n"
+            "Element: On top only if some sub-element of the object is selected");
+    OnTopWhenSelected.setEnums(OnTopEnum);
 
     sPixmap = "Feature";
 }
@@ -76,10 +93,16 @@ void ViewProviderDocumentObject::getTaskViewContent(std::vector<Gui::TaskView::T
 void ViewProviderDocumentObject::startRestoring()
 {
     hide();
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector)
+        ext->extensionStartRestoring();
 }
 
 void ViewProviderDocumentObject::finishRestoring()
 {
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector)
+        ext->extensionFinishRestoring();
 }
 
 bool ViewProviderDocumentObject::isAttachedToDocument() const
@@ -127,6 +150,8 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
             Visibility.getValue() ? show() : hide();
             Visibility.setStatus(App::Property::User2, false);
         }
+        if(getObject() && getObject()->Visibility.getValue()!=Visibility.getValue())
+            getObject()->Visibility.setValue(Visibility.getValue());
     }
 
     ViewProvider::onChanged(prop);
@@ -134,24 +159,24 @@ void ViewProviderDocumentObject::onChanged(const App::Property* prop)
 
 void ViewProviderDocumentObject::hide(void)
 {
+    ViewProvider::hide();
     // use this bit to check whether 'Visibility' must be adjusted
     if (Visibility.testStatus(App::Property::User2) == false) {
         Visibility.setStatus(App::Property::User2, true);
         Visibility.setValue(false);
         Visibility.setStatus(App::Property::User2, false);
     }
-    ViewProvider::hide();
 }
 
 void ViewProviderDocumentObject::show(void)
 {
+    ViewProvider::show();
     // use this bit to check whether 'Visibility' must be adjusted
     if (Visibility.testStatus(App::Property::User2) == false) {
         Visibility.setStatus(App::Property::User2, true);
         Visibility.setValue(true);
         Visibility.setStatus(App::Property::User2, false);
     }
-    ViewProvider::show();
 }
 
 void ViewProviderDocumentObject::updateView()
@@ -165,13 +190,17 @@ void ViewProviderDocumentObject::updateView()
     for (std::map<std::string, App::Property*>::iterator it = Map.begin(); it != Map.end(); ++it) {
         updateData(it->second);
     }
-    if (vis) ViewProvider::show();
+    if (vis && Visibility.getValue()) ViewProvider::show();
 }
 
 void ViewProviderDocumentObject::attach(App::DocumentObject *pcObj)
 {
     // save Object pointer
     pcObject = pcObj;
+
+    if(pcObj && pcObj->getNameInDocument() &&
+       Visibility.getValue()!=pcObj->Visibility.getValue())
+        pcObj->Visibility.setValue(Visibility.getValue());
 
     // Retrieve the supported display modes of the view provider
     aDisplayModesArray = this->getDisplayModes();
@@ -198,9 +227,15 @@ void ViewProviderDocumentObject::attach(App::DocumentObject *pcObj)
         ext->extensionAttach(pcObj);
 }
 
-void ViewProviderDocumentObject::updateData(const App::Property* prop)
+void ViewProviderDocumentObject::update(const App::Property* prop)
 {
-    ViewProvider::updateData(prop);
+    // bypass view provider update to always allow changing visibility from
+    // document object
+    if(prop == &getObject()->Visibility) {
+        if(!isRestoring() && Visibility.getValue()!=getObject()->Visibility.getValue())
+            Visibility.setValue(!Visibility.getValue());
+    }else
+        ViewProvider::update(prop);
 }
 
 Gui::Document* ViewProviderDocumentObject::getDocument() const
@@ -304,3 +339,95 @@ PyObject* ViewProviderDocumentObject::getPyObject()
     pyViewObject->IncRef();
     return pyViewObject;
 }
+
+bool ViewProviderDocumentObject::canDropObjectEx(
+        App::DocumentObject* obj, App::DocumentObject *owner, const char *subname) const
+{
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector){
+        if(ext->extensionCanDropObjectEx(obj,owner,subname))
+            return true;
+    }
+    if(obj && obj->getDocument()!=getObject()->getDocument())
+        return false;
+    return canDropObject(obj);
+}
+
+bool ViewProviderDocumentObject::showInTree() const {
+    return ShowInTree.getValue();
+}
+
+Base::BoundBox3d ViewProviderDocumentObject::getBoundingBox() const {
+    auto doc = getDocument();
+    if(!doc) 
+        throw Base::RuntimeError("no document");
+    Gui::MDIView* view = doc->getViewOfViewProvider(
+            const_cast<ViewProviderDocumentObject*>(this));
+    if(!view)
+        throw Base::RuntimeError("no view");
+    
+    Gui::View3DInventorViewer* viewer = static_cast<Gui::View3DInventor*>(view)->getViewer();
+    SoGetBoundingBoxAction bboxAction(viewer->getSoRenderManager()->getViewportRegion());
+
+    auto mode = pcModeSwitch->whichChild.getValue();
+    pcModeSwitch->whichChild = getDefaultMode();
+    bboxAction.apply(pcRoot);
+    pcModeSwitch->whichChild = mode;
+
+    auto bbox = bboxAction.getBoundingBox();
+    float minX,minY,minZ,maxX,maxY,maxZ;
+    bbox.getMax().getValue(maxX,maxY,maxZ);
+    bbox.getMin().getValue(minX,minY,minZ);
+    return Base::BoundBox3d(minX,minY,minZ,maxX,maxY,maxZ);
+}
+
+bool ViewProviderDocumentObject::getElementPicked(const SoPickedPoint *pp, std::string &subname) const
+{
+    auto childRoot = getChildRoot();
+    if(!childRoot)
+        return ViewProvider::getElementPicked(pp,subname);
+
+    if(!isSelectable()) return false;
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector)
+        if(ext->extensionGetElementPicked(pp,subname))
+            return true;
+
+    SoPath* path = pp->getPath();
+    auto idx = path->findNode(childRoot);
+    if(idx<0 || idx+1>=path->getLength())
+        return false;
+    auto vp = getDocument()->getViewProvider(path->getNode(idx+1));
+    if(!vp) return false;
+    auto obj = vp->getObject();
+    if(!obj || !obj->getNameInDocument())
+        return false;
+    std::ostringstream str;
+    str << obj->getNameInDocument() << '.';
+    if(vp->getElementPicked(pp,subname))
+        str << subname;
+    subname = str.str();
+    return true;
+}
+
+SoDetail *ViewProviderDocumentObject::getDetailPath(const char *subname, SoFullPath *path, bool append) const
+{
+    auto det = ViewProvider::getDetailPath(subname,path,append);
+    if(det) return det;
+
+    auto childRoot = getChildRoot();
+    if(childRoot && subname) {
+        const char *dot = strchr(subname,'.');
+        if(!dot) return 0;
+        auto obj = getObject();
+        if(!obj || !obj->getNameInDocument()) return 0;
+        auto sobj = obj->getSubObject(std::string(subname,dot-subname+1).c_str());
+        if(!sobj) return 0;
+        auto vp = Application::Instance->getViewProvider(sobj);
+        if(!vp) return 0;
+        path->append(childRoot);
+        det = vp->getDetailPath(dot+1,path,true);
+    }
+    return det;
+}
+

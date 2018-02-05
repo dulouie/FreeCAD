@@ -152,7 +152,10 @@ PyMethodDef Application::Methods[] = {
    "Activate the specified document"},
   {"activeView", (PyCFunction)Application::sActiveView, 1,
    "activeView() -> object or None\n\n"
-   "Return the active view of the active document or None if no one exists"},
+   "Return the active view of the active document or None if no one exists" },
+   { "editDocument", (PyCFunction)Application::sEditDocument, 1,
+   "editDocument() -> object or None\n\n"
+   "Return the current editing document or None if no one exists" },
   {"getDocument",             (PyCFunction) Application::sGetDocument,      1,
    "getDocument(string) -> object\n\n"
    "Get a document by its name"},
@@ -177,6 +180,20 @@ PyMethodDef Application::Methods[] = {
 
   {NULL, NULL, 0, NULL}		/* Sentinel */
 };
+
+PyObject* Gui::Application::sEditDocument(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
+{
+	if (!PyArg_ParseTuple(args, ""))     // convert args: Python->C 
+		return NULL;                       // NULL triggers exception 
+
+	Document *pcDoc = Instance->editDocument();
+	if (pcDoc) {
+		return pcDoc->getPyObject();
+	}
+	else {
+		Py_Return;
+	}
+}
 
 PyObject* Gui::Application::sActiveDocument(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
 {
@@ -982,7 +999,11 @@ PyObject* Application::sAddCommand(PyObject * /*self*/, PyObject *args,PyObject 
             group = what[1];
         }
         else {
-            group = module;
+            boost::regex rx("/Ext/freecad/(\\w+)/");
+            if (boost::regex_search(file, what, rx))
+                group = what[1];
+            else
+                group = module;
         }
     }
     catch (Py::Exception& e) {
@@ -1071,6 +1092,7 @@ PyObject* Application::sDoCommand(PyObject * /*self*/, PyObject *args, PyObject 
     if (!PyArg_ParseTuple(args, "s", &sCmd))
         return NULL;
 
+    Gui::Command::printPyCaller();
     Gui::Application::Instance->macroManager()->addLine(MacroManager::App, sCmd);
 
     PyObject *module, *dict;
@@ -1092,6 +1114,7 @@ PyObject* Application::sDoCommandGui(PyObject * /*self*/, PyObject *args, PyObje
     if (!PyArg_ParseTuple(args, "s", &sCmd))
         return NULL;
 
+    Gui::Command::printPyCaller();
     Gui::Application::Instance->macroManager()->addLine(MacroManager::Gui, sCmd);
 
     PyObject *module, *dict;

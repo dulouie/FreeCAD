@@ -157,6 +157,21 @@
         <file>Geofeaturegroup.svg</file>
         <file>Std_Axis.svg</file>
         <file>Std_Plane.svg</file>
+        <file>Link.svg</file>
+        <file>LinkArray.svg</file>
+        <file>LinkElement.svg</file>
+        <file>LinkGroup.svg</file>
+        <file>LinkOverlay.xpm</file>
+        <file>LinkSubOverlay.xpm</file>
+        <file>LinkSubElement.xpm</file>
+        <file>LinkSub.svg</file>
+        <file>LinkReplace.svg</file>
+        <file>LinkImport.svg</file>
+        <file>LinkImportAll.svg</file>
+        <file>LinkSelect.svg</file>
+        <file>LinkSelectFinal.svg</file>
+        <file>LinkSelectAll.svg</file>
+        <file>Unlink.svg</file>
     </qresource>
     <!-- Alternative directory names for icons that should be loaded from a theme -->
     <!-- See also http://permalink.gmane.org/gmane.comp.lib.qt.general/26374 -->

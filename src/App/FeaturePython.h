@@ -45,10 +45,32 @@ public:
     ~FeaturePythonImp();
 
     bool execute();
+    bool mustExecute() const;
     void onBeforeChange(const Property* prop);
+    bool onBeforeChangeLabel(std::string &newLabel);
     void onChanged(const Property* prop);
     void onDocumentRestored();
+    std::string getViewProviderName();
     PyObject *getPyObject(void);
+
+    bool getSubObject(App::DocumentObject *&ret, const char *subname, PyObject **pyObj, 
+            Base::Matrix4D *mat, bool transform, int depth) const;
+
+    bool getSubObjects(std::vector<std::string> &ret) const;
+
+    bool getLinkedObject(App::DocumentObject *&ret, bool recurse, 
+            Base::Matrix4D *mat, bool transform, int depth) const;
+
+    int canLinkProperties() const;
+
+    int allowDuplicateLabel() const;
+
+    /// return true to activate tree view group object handling
+    int hasChildElement() const;
+    /// Get sub-element visibility
+    int isElementVisible(const char *) const;
+    /// Set sub-element visibility
+    int setElementVisible(const char *, bool);
 
 private:
     App::DocumentObject* object;
@@ -81,7 +103,9 @@ public:
     short mustExecute() const {
         if (this->isTouched())
             return 1;
-        return FeatureT::mustExecute();
+        auto ret = FeatureT::mustExecute();
+        if(ret) return ret;
+        return imp->mustExecute()?1:0;
     }
     /// recalculate the Feature
     virtual DocumentObjectExecReturn *execute(void) {
@@ -95,10 +119,41 @@ public:
         }
         return DocumentObject::StdReturn;
     }
+    virtual const char* getViewProviderNameOverride(void) const override{
+        viewProviderName = imp->getViewProviderName();
+        if(viewProviderName.size())
+            return viewProviderName.c_str();
+        return FeatureT::getViewProviderNameOverride();
+    }
     /// returns the type name of the ViewProvider
     virtual const char* getViewProviderName(void) const {
         return FeatureT::getViewProviderName();
         //return "Gui::ViewProviderPythonFeature";
+    }
+
+    virtual App::DocumentObject *getSubObject(const char *subname, PyObject **pyObj, 
+            Base::Matrix4D *mat, bool transform, int depth) const override 
+    {
+        App::DocumentObject *ret = 0;
+        if(imp->getSubObject(ret,subname,pyObj,mat,transform,depth))
+            return ret;
+        return FeatureT::getSubObject(subname,pyObj,mat,transform,depth);
+    }
+
+    virtual std::vector<std::string> getSubObjects() const override {
+        std::vector<std::string> ret;
+        if(imp->getSubObjects(ret))
+            return ret;
+        return FeatureT::getSubObjects();
+    }
+
+    virtual App::DocumentObject *getLinkedObject(bool recurse, 
+            Base::Matrix4D *mat, bool transform, int depth) const override
+    {
+        App::DocumentObject *ret = 0;
+        if(imp->getLinkedObject(ret,recurse,mat,transform,depth))
+            return ret;
+        return FeatureT::getLinkedObject(recurse,mat,transform,depth);
     }
 
     /** @name Access properties */
@@ -179,6 +234,42 @@ public:
     }
     //@}
 
+    /// return true to activate tree view group object handling
+    virtual bool hasChildElement() const override {
+        int ret = imp->hasChildElement();
+        if(ret<0) 
+            return FeatureT::hasChildElement();
+        return ret?true:false;
+    }
+    /// Get sub-element visibility
+    virtual int isElementVisible(const char *element) const override {
+        int ret = imp->isElementVisible(element);
+        if(ret == -2)
+            return FeatureT::isElementVisible(element);
+        return ret;
+    }
+    /// Set sub-element visibility
+    virtual int setElementVisible(const char *element, bool visible) override {
+        int ret = imp->setElementVisible(element,visible);
+        if(ret == -2)
+            return FeatureT::setElementVisible(element,visible);
+        return ret;
+    }
+
+    virtual bool canLinkProperties() const override {
+        int ret = imp->canLinkProperties();
+        if(ret < 0)
+            return FeatureT::canLinkProperties();
+        return ret?true:false;
+    }
+
+    virtual bool allowDuplicateLabel() const override {
+        int ret = imp->allowDuplicateLabel();
+        if(ret < 0)
+            return FeatureT::allowDuplicateLabel();
+        return ret?true:false;
+    }
+
     PyObject *getPyObject(void) {
         if (FeatureT::PythonObject.is(Py::_None())) {
             // ref counter is set to 1
@@ -198,6 +289,10 @@ protected:
         FeatureT::onBeforeChange(prop);
         imp->onBeforeChange(prop);
     }
+    virtual void onBeforeChangeLabel(std::string &newLabel) override{
+        if(!imp->onBeforeChangeLabel(newLabel))
+            FeatureT::onBeforeChangeLabel(newLabel);
+    }
     virtual void onChanged(const Property* prop) {
         imp->onChanged(prop);
         FeatureT::onChanged(prop);
@@ -211,6 +306,7 @@ private:
     FeaturePythonImp* imp;
     DynamicProperty* props;
     PropertyPythonObject Proxy;
+    mutable std::string viewProviderName;
 };
 
 // Special Feature-Python classes

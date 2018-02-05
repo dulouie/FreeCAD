@@ -30,6 +30,8 @@
 #include "Selection.h"
 
 class QListWidget;
+class QListWidgetItem;
+class QCheckBox;
 class QLabel;
 
 namespace App {
@@ -42,7 +44,7 @@ namespace DockWnd {
 /** A test class. A more elaborate class description.
  */
 class SelectionView : public Gui::DockWindow, 
-                      public Gui::SelectionSingleton::ObserverType
+                      public Gui::SelectionObserver
 {
     Q_OBJECT
 
@@ -60,8 +62,7 @@ public:
     virtual ~SelectionView();
 
     /// Observer message from the Selection
-    virtual void OnChange(Gui::SelectionSingleton::SubjectType &rCaller,
-                          Gui::SelectionSingleton::MessageType Reason);
+    virtual void onSelectionChanged(const SelectionChanges& msg);
 
 
     bool onMsg(const char* pMsg,const char** ppReturn);
@@ -73,6 +74,9 @@ public:
 
     QListWidget* selectionView;
     QLabel*      countLabel;
+
+    QCheckBox *enablePickList;
+    QListWidget *pickList;
 
 public Q_SLOTS:
     /// get called when text is entered in the search box
@@ -87,11 +91,21 @@ public Q_SLOTS:
     void toPython(void);
     void touch(void);
     void showPart(void);
+    void onEnablePickList();
+    void toggleSelect(QListWidgetItem* item=0);
+    void preselect(QListWidgetItem* item=0);
+
+protected:
+    void showEvent(QShowEvent *) override;
+    void hideEvent(QHideEvent *) override;
 
 private:
     QString getModule(const char* type) const;
     QString getProperty(App::DocumentObject* obj) const;
     bool supportPart(App::DocumentObject* obj, const QString& part) const;
+
+private:
+    float x,y,z;
 };
 
 } // namespace DockWnd

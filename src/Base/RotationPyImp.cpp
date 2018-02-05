@@ -349,25 +349,28 @@ void RotationPy::setAngle(Py::Float arg)
     this->getRotationPtr()->setValue(axis, angle);
 }
 
-PyObject *RotationPy::getCustomAttributes(const char* attr) const
+Py::Object RotationPy::getMatrix(void) const
 {
-    if (strcmp(attr, "Matrix") == 0) {
-        Matrix4D mat;
-        this->getRotationPtr()->getValue(mat);
-        return new MatrixPy(mat);
-    }
+    Base::Matrix4D *mat = new Base::Matrix4D();
+    this->getRotationPtr()->getValue(*mat);
+    return Py::Object(new Base::MatrixPy(mat));
+}
+
+void RotationPy::setMatrix(Py::Object arg) 
+{
+    if(!PyObject_TypeCheck(arg.ptr(),&Base::MatrixPy::Type))
+        throw Py::TypeError("expect object of type matrix");
+    this->getRotationPtr()->setValue(*static_cast<Base::MatrixPy*>(arg.ptr())->getMatrixPtr());
+}
+
+PyObject *RotationPy::getCustomAttributes(const char* /*attr*/) const
+{
     return 0;
 }
 
 int RotationPy::setCustomAttributes(const char* attr, PyObject* obj)
 {
-    if (strcmp(attr, "Matrix") == 0) {
-        if (PyObject_TypeCheck(obj, &(MatrixPy::Type))) {
-            this->getRotationPtr()->setValue(*static_cast<MatrixPy*>(obj)->getMatrixPtr());
-            return 1;
-        }
-    }
-    else if (strcmp(attr, "Axes") == 0) {
+    if (strcmp(attr, "Axes") == 0) {
         if (PySequence_Check(obj) && PySequence_Size(obj) == 2) {
             PyObject* vec1 = PySequence_GetItem(obj, 0);
             PyObject* vec2 = PySequence_GetItem(obj, 1);

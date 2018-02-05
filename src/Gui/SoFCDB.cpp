@@ -121,6 +121,8 @@ void Gui::SoFCDB::init()
     MarkerBitmaps                   ::initClass();
     SoFCCSysDragger                 ::initClass();
     SmSwitchboard                   ::initClass();
+    SoFCSelectionRoot               ::initClass();
+    SoFCPathAnnotation              ::initClass();
 
     PropertyItem                    ::init();
     PropertySeparatorItem           ::init();
@@ -203,6 +205,8 @@ void Gui::SoFCDB::finish()
     SoFCSelectionColorAction        ::finish();
     SoUpdateVBOAction               ::finish();
     SoFCHighlightColorAction        ::finish();
+    SoFCSelectionRoot               ::finish();
+    SoFCPathAnnotation              ::finish();
     
     storage->unref();
     storage = nullptr;

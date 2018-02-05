@@ -54,6 +54,7 @@ class SbBox2s;
 class SoVectorizeAction;
 class QImage;
 class SoGroup;
+class SoPickStyle;
 
 namespace Gui {
 
@@ -62,7 +63,6 @@ class SoFCBackgroundGradient;
 class NavigationStyle;
 class SoFCUnifiedSelection;
 class Document;
-class SoFCUnifiedSelection;
 class GLGraphicsItem;
 class SoShapeScale;
 class ViewerEventFilter;
@@ -70,7 +70,7 @@ class ViewerEventFilter;
 /** GUI view into a 3D scene provided by View3DInventor
  *
  */
-class GuiExport View3DInventorViewer : public Quarter::SoQTQuarterAdaptor, public Gui::SelectionSingleton::ObserverType
+class GuiExport View3DInventorViewer : public Quarter::SoQTQuarterAdaptor, public SelectionObserver
 {
     typedef Quarter::SoQTQuarterAdaptor inherited;
     
@@ -130,8 +130,9 @@ public:
     void init();
 
     /// Observer message from the Selection
-    virtual void OnChange(Gui::SelectionSingleton::SubjectType &rCaller,
-                          Gui::SelectionSingleton::MessageType Reason);
+    virtual void onSelectionChanged(const SelectionChanges &Reason);
+    void addToGroupOnTop(App::DocumentObject *obj, const char *subname);
+    void clearGroupOnTop();
 
     SoDirectionalLight* getBacklight(void) const;
     void setBacklight(SbBool on);
@@ -186,11 +187,21 @@ public:
     /// get all view providers of given type
     std::vector<ViewProvider*> getViewProvidersOfType(const Base::Type& typeId) const;
     /// set the ViewProvider in special edit mode
-    SbBool setEditingViewProvider(Gui::ViewProvider* p, int ModNum=0);
+    void setEditingViewProvider(Gui::ViewProvider* p, int ModNum);
     /// return whether a view provider is edited
     SbBool isEditingViewProvider() const;
     /// reset from edit mode
     void resetEditingViewProvider();
+    void setupEditingRoot(SoNode *node=0, const Base::Matrix4D *mat=0);
+    void resetEditingRoot(bool updateLinks=true);
+    /** Helper method to get picked entities while editing.
+     * It's in the responsibility of the caller to delete the returned instance.
+     */
+    SoPickedPoint* getPointOnRay(const SbVec2s& pos, ViewProvider* vp) const;
+    /** Helper method to get picked entities while editing.
+     * It's in the responsibility of the caller to delete the returned instance.
+     */
+    SoPickedPoint* getPointOnRay(const SbVec3f& pos, const SbVec3f& dir, ViewProvider* vp) const;
     /// display override mode
     void setOverrideMode(const std::string &mode);
     void updateOverrideMode(const std::string &mode);
@@ -406,6 +417,11 @@ private:
     SoDirectionalLight* backlight;
 
     SoSeparator * pcViewProviderRoot;
+    SoSeparator * pcGroupOnTop;
+    SoPickStyle *pcGroupOnTopPickStyle;
+    SoSeparator * pcEditingRoot;
+    SoTransform * pcEditingTransform;
+    bool restoreEditingRoot;
     SoEventCallback* pEventCallback;
     NavigationStyle* navigation;
     SoFCUnifiedSelection* selectionRoot;

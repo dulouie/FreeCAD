@@ -156,6 +156,8 @@ generate_from_xml(ViewProviderPy)
 generate_from_xml(ViewProviderDocumentObjectPy)
 generate_from_xml(WorkbenchPy)
 generate_from_xml(SelectionObjectPy)
+generate_from_xml(LinkViewPy)
+generate_from_xml(ViewProviderLinkPy)
 
 generate_from_py(FreeCADGuiInit GuiInitScript.h)
 
@@ -167,6 +169,8 @@ SET(FreeCADGui_XML_SRCS
     WorkbenchPy.xml
     SelectionObjectPy.xml
     DocumentPy.xml
+    LinkViewPy.xml
+    ViewProviderLinkPy.xml
 )
 SOURCE_GROUP("XML" FILES ${FreeCADApp_XML_SRCS})
 
@@ -397,6 +401,7 @@ SET(Command_CPP_SRCS
     CommandTest.cpp
     CommandView.cpp
     CommandStructure.cpp
+    CommandLink.cpp
 )
 SET(Command_SRCS
     ${Command_CPP_SRCS}
@@ -904,6 +909,9 @@ SET(Viewprovider_CPP_SRCS
     ViewProviderOrigin.cpp
     ViewProviderMaterialObject.cpp
     ViewProviderTextDocument.cpp
+    ViewProviderLink.cpp
+    LinkViewPyImp.cpp
+    ViewProviderLinkPyImp.cpp
 )
 SET(Viewprovider_SRCS
     ${Viewprovider_CPP_SRCS}
@@ -934,6 +942,7 @@ SET(Viewprovider_SRCS
     ViewProviderOrigin.h
     ViewProviderMaterialObject.h
     ViewProviderTextDocument.h
+    ViewProviderLink.h
 )
 SOURCE_GROUP("View3D\\Viewprovider" FILES ${Viewprovider_SRCS})
 

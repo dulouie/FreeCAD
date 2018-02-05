@@ -30,6 +30,7 @@
 #include <App/PropertyExpressionEngine.h>
 
 #include <Base/TimeInfo.h>
+#include <Base/Matrix.h>
 #include <CXX/Objects.hxx>
 
 #include <bitset>
@@ -87,9 +88,16 @@ public:
     PropertyString Label;
     PropertyExpressionEngine ExpressionEngine;
 
+    /// Allow control visibility status in App name space
+    PropertyBool Visibility;
+
     /// returns the type name of the ViewProvider
     virtual const char* getViewProviderName(void) const {
         return "";
+    }
+    /// This function is introduced to allow Python feature override its view provider
+    virtual const char *getViewProviderNameOverride() const {
+        return getViewProviderName();
     }
     /// Constructor
     DocumentObject(void);
@@ -97,6 +105,8 @@ public:
 
     /// returns the name which is set in the document for this object (not the name property!)
     const char *getNameInDocument(void) const;
+    /// returns the name that is safe to be exported to other document
+    std::string getExportName(bool forced=false) const;
     virtual bool isAttachedToDocument() const;
     virtual const char* detachFromDocument();
     /// gets the document in which this Object is handled
@@ -131,6 +141,31 @@ public:
     void setStatus(ObjectStatus pos, bool on) {StatusBits.set((size_t)pos, on);}
     //@}
 
+    /** Child element handling
+     */
+    //@{
+    /** Set sub-element visibility
+     * 
+     * For performance reason, \c element must not contain any further
+     * sub-elements, i.e. there should be no '.' inside \c element.
+     *
+     * @return -1 if element visiblity is not supported, 0 if element is not
+     * found, 1 if success
+     */
+    virtual int setElementVisible(const char *element, bool visible); 
+
+    /** Get sub-element visibility
+     *
+     * @return -1 if element visiblity is not supported or element not found, 0
+     * if element is invisible, or else 1
+     */
+    virtual int isElementVisible(const char *element) const;
+
+    /// return true to activate tree view group object handling and element visibility
+    virtual bool hasChildElement() const;
+    //@}
+
+
     /** DAG handling
         This part of the interface deals with viewing the document as
         an DAG (directed acyclic graph). 
@@ -148,6 +183,8 @@ public:
     std::vector<App::DocumentObject*> getInList(void) const;
     /// get all objects link directly or indirectly to this object 
     std::vector<App::DocumentObject*> getInListRecursive(void) const;
+    /// Get a set of all objects linking to this object, including possible external parent objects
+    std::set<App::DocumentObject*> getInListEx(bool recursive) const;
     /// get group if object is part of a group, otherwise 0 is returned
     DocumentObjectGroup* getGroup() const;
 
@@ -191,8 +228,11 @@ public:
      */
     virtual short mustExecute(void) const;
 
-    /// Recompute only this feature
-    bool recomputeFeature();
+    /** Recompute only this feature
+     *
+     * @param recursive: set to true to recompute any dependent objects as well
+     */
+    bool recomputeFeature(bool recursive=false);
 
     /// get the status Message
     const char *getStatusString(void) const;
@@ -205,8 +245,84 @@ public:
      */
     virtual void onLostLinkToObject(DocumentObject*);
     virtual PyObject *getPyObject(void);
-    /// its used to get the python sub objects by name (e.g. by the selection)
-    virtual std::vector<PyObject *> getPySubObjects(const std::vector<std::string>&) const;
+
+    /** Get the sub element/object by name
+     *
+     * @param subname: a string which is dot separated name to refer to a sub
+     * element or object. An empty string can be used to refer to the object
+     * itself
+     *
+     * @param pyObj: if non zero, returns the python object corresponding to
+     * this sub object. The actual type of this python object is implementation
+     * dependent. For example, The current implementation of Part::Feature will
+     * return the TopoShapePy, event if there is no sub-element reference, in
+     * which case it returns the whole shape.
+     *
+     * @param mat: If non zero, it is used as the current transformation matrix
+     * on input.  And output as the accumulated transformation up until and
+     * include the transformation applied by the final object reference in \c
+     * subname. For Part::Feature, the transformation is applied to the
+     * TopoShape inside \c pyObj before returning.
+     * 
+     * @param transform: if false, then it will not apply the object's own
+     * transformation to \c mat, which lets you override the object's placement
+     * (and possibly scale). 
+     *
+     * @param depth: depth limitation as hint for cyclic link detection
+     *
+     * @return The last document object refered in subname. If subname is empty,
+     * then it shall return itself. If subname is invalid, then it shall return
+     * zero.
+     */
+    virtual DocumentObject *getSubObject(const char *subname, PyObject **pyObj=0, 
+            Base::Matrix4D *mat=0, bool transform=true, int depth=0) const;
+
+    /** Return name reference of all sub-objects
+     *
+     * The default implementation returns all object references in
+     * PropertyLink, and PropertyLinkList, if any
+     *
+     * @return Return a vector of subname references for all sub-objects. In
+     * most cases, the name returned will be the object name plus an ending
+     * '.', which can be passed directly to getSubObject() to retrieve the
+     * name. The reason to return the name reference instead of the sub object
+     * itself is because there may be no real sub object, or the sub object
+     * need special transformation. For example, sub objects of an array type
+     * of object.
+     */
+    virtual std::vector<std::string> getSubObjects() const;
+
+    /** Return the linked object with optional transformation
+     * 
+     * @param recurse: If false, return the immediate linked object, or else
+     * recursively call this function to return the final linked object.
+     *
+     * @param mat: If non zero, it is used as the current transformation matrix
+     * on input.  And output as the accumulated transformation till the final
+     * linked object. 
+     *
+     * @param transform: if false, then it will not accumulate the object's own
+     * placement into \c mat, which lets you override the object's placement.
+     *
+     * @return Return the linked object. This function must return itself if the
+     * it is not a link or the link is invalid.
+     */
+    virtual DocumentObject *getLinkedObject(bool recurse=true, 
+            Base::Matrix4D *mat=0, bool transform=false, int depth=0) const;
+
+    /* Return true to cause PropertyView to show linked object's property */
+    virtual bool canLinkProperties() const {return true;}
+
+    /* Return true to bypass duplicate label checking */
+    virtual bool allowDuplicateLabel() const {return false;}
+
+    /*** Called to let object itself control relabeling
+     *
+     * @param newLabel: input as the new label, which can be modified by object itself
+     *
+     * This function is is called before onBeforeChange()
+     */
+    virtual void onBeforeChangeLabel(std::string &newLabel) {(void)newLabel;}
 
     friend class Document;
     friend class Transaction;
@@ -227,6 +343,10 @@ public:
     virtual void connectRelabelSignals();
 
     const std::string & getOldLabel() const { return oldLabel; }
+
+    const char *getViewProviderNameStored() const {
+        return _pcViewProviderName.c_str();
+    }
 
 protected:
     /// recompute only this object
@@ -291,6 +411,10 @@ protected: // attributes
 
     // pointer to the document name string (for performance)
     const std::string *pcNameInDocument;
+
+private:
+    // accessed by App::Document to record and restore the correct view provider type
+    std::string _pcViewProviderName;
     
 private:
     // Back pointer to all the fathers in a DAG of the document

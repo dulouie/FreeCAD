@@ -27,6 +27,8 @@
 # include <sstream>
 #endif
 
+#include <Base/BoundBoxPy.h>
+#include "Document.h"
 #include "Gui/ViewProviderDocumentObject.h"
 #include <App/DocumentObject.h>
 
@@ -55,10 +57,38 @@ PyObject* ViewProviderDocumentObjectPy::update(PyObject *args)
     } PY_CATCH;
 }
 
+PyObject *ViewProviderDocumentObjectPy::getBoundingBox(PyObject *args) {
+    if (!PyArg_ParseTuple(args, ""))
+        return NULL;
+    PY_TRY {
+        auto bbox = getViewProviderDocumentObjectPtr()->getBoundingBox();
+        Py::Object ret(new Base::BoundBoxPy(new Base::BoundBox3d(bbox)));
+        return Py::new_reference_to(ret);
+    } PY_CATCH;
+}
+
+
 Py::Object ViewProviderDocumentObjectPy::getObject(void) const
 {
     App::DocumentObject* obj = getViewProviderDocumentObjectPtr()->getObject();
     return Py::Object(obj->getPyObject(), true); // do not inc'ref twice
+}
+
+Py::Boolean ViewProviderDocumentObjectPy::getForceUpdate() const 
+{
+    return Py::Boolean(getViewProviderDocumentObjectPtr()->isUpdateForced());
+}
+
+void ViewProviderDocumentObjectPy::setForceUpdate(Py::Boolean arg)
+{
+    getViewProviderDocumentObjectPtr()->forceUpdate(arg);
+}
+
+Py::Object ViewProviderDocumentObjectPy::getDocument() const {
+    auto doc = getViewProviderDocumentObjectPtr()->getDocument();
+    if(!doc)
+        return Py::None();
+    return Py::Object(doc->getPyObject(),true);
 }
 
 PyObject *ViewProviderDocumentObjectPy::getCustomAttributes(const char* /*attr*/) const

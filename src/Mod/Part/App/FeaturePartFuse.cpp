@@ -89,9 +89,9 @@ App::DocumentObjectExecReturn *MultiFuse::execute(void)
 
     std::vector<App::DocumentObject*>::iterator it;
     for (it = obj.begin(); it != obj.end(); ++it) {
-        if ((*it)->getTypeId().isDerivedFrom(Part::Feature::getClassTypeId())) {
-            s.push_back(static_cast<Part::Feature*>(*it)->Shape.getValue());
-        }
+        s.push_back(Feature::getShape(*it));
+        if(s.back().IsNull())
+            throw Base::Exception("Input shape is null");
     }
 
     bool argumentsAreInCompound = false;
@@ -116,11 +116,7 @@ App::DocumentObjectExecReturn *MultiFuse::execute(void)
             std::vector<ShapeHistory> history;
 #if OCC_VERSION_HEX <= 0x060800
             TopoDS_Shape resShape = s.front();
-            if (resShape.IsNull())
-                throw Base::Exception("Input shape is null");
             for (std::vector<TopoDS_Shape>::iterator it = s.begin()+1; it != s.end(); ++it) {
-                if (it->IsNull())
-                    throw Base::Exception("Input shape is null");
 
                 // Let's call algorithm computing a fuse operation:
                 BRepAlgoAPI_Fuse mkFuse(resShape, *it);

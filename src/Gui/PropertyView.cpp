@@ -38,12 +38,14 @@
 #include <App/PropertyContainer.h>
 #include <App/DocumentObject.h>
 #include <App/Document.h>
+#include <Base/Console.h>
 
 #include "PropertyView.h"
 #include "Application.h"
 #include "Document.h"
 #include "BitmapFactory.h"
 #include "ViewProvider.h"
+#include "ViewProviderDocumentObject.h"
 
 #include "propertyeditor/PropertyEditor.h"
 
@@ -51,7 +53,6 @@ using namespace std;
 using namespace Gui;
 using namespace Gui::DockWnd;
 using namespace Gui::PropertyEditor;
-
 
 /* TRANSLATOR Gui::PropertyView */
 
@@ -61,7 +62,7 @@ using namespace Gui::PropertyEditor;
  * in two tabs.
  */
 PropertyView::PropertyView(QWidget *parent)
-  : QWidget(parent)
+  : QWidget(parent),SelectionObserver(false) 
 {
     QGridLayout* pLayout = new QGridLayout( this ); 
     pLayout->setSpacing(0);
@@ -110,6 +111,12 @@ PropertyView::PropertyView(QWidget *parent)
     this->connectPropChange =
     App::GetApplication().signalChangePropertyEditor.connect(boost::bind
         (&PropertyView::slotChangePropertyEditor, this, _1));
+    this->connectUndoDocument =
+    App::GetApplication().signalUndoDocument.connect(boost::bind
+        (&PropertyView::slotRollback, this));
+    this->connectRedoDocument =
+    App::GetApplication().signalRedoDocument.connect(boost::bind
+        (&PropertyView::slotRollback, this));
 }
 
 PropertyView::~PropertyView()
@@ -119,6 +126,44 @@ PropertyView::~PropertyView()
     this->connectPropAppend.disconnect();
     this->connectPropRemove.disconnect();
     this->connectPropChange.disconnect();
+    this->connectUndoDocument.disconnect();
+    this->connectRedoDocument.disconnect();
+}
+
+void PropertyView::hideEvent(QHideEvent *ev) {
+    this->detachSelection();
+    PropertyModel::PropertyList props;
+    // clear the properties before hiding.
+    propertyEditorData->buildUp(props);
+    propertyEditorView->buildUp(props);
+    clearPropertyItemSelection();
+    QWidget::hideEvent(ev);
+}
+
+void PropertyView::showEvent(QShowEvent *ev) {
+    this->attachSelection();
+    QWidget::showEvent(ev);
+}
+
+void PropertyView::clearPropertyItemSelection() {
+    if(App::GetApplication().autoTransaction()) {
+        QModelIndex index;
+        propertyEditorData->clearSelection();
+        propertyEditorData->setCurrentIndex(index);
+        propertyEditorView->clearSelection();
+        propertyEditorView->setCurrentIndex(index);
+    }
+}
+
+void PropertyView::slotRollback() {
+    // If auto transaction (BaseApp->Preferences->Document->AutoTransaction) is
+    // enabled, PropertyItemDelegate will setup application active transaction
+    // on entering edit mode, and close active transaction when exit editing.
+    // But, when the user clicks undo/redo button while editing some property,
+    // the current active transaction will be closed by design, which cause
+    // further editing to be not recorded. Hence, we force unselect any property
+    // item on undo/redo
+    clearPropertyItemSelection();
 }
 
 void PropertyView::slotChangePropertyData(const App::DocumentObject&, const App::Property& prop)
@@ -134,7 +179,7 @@ void PropertyView::slotChangePropertyView(const Gui::ViewProvider&, const App::P
 void PropertyView::slotAppendDynamicProperty(const App::Property& prop)
 {
     App::PropertyContainer* parent = prop.getContainer();
-    if (parent->isHidden(&prop))
+    if (parent->isHidden(&prop) || prop.testStatus(App::Property::Hidden)) 
         return;
 
     if (parent->isDerivedFrom(App::DocumentObject::getClassTypeId())) {
@@ -192,45 +237,84 @@ void PropertyView::onSelectionChanged(const SelectionChanges& msg)
         msg.Type != SelectionChanges::ClrSelection)
         return;
 
+    clearPropertyItemSelection();
+
+    std::set<App::DocumentObject *> objSet;
+
     // group the properties by <name,id>
     std::vector<PropInfo> propDataMap;
     std::vector<PropInfo> propViewMap;
-    std::vector<SelectionSingleton::SelObj> array = Gui::Selection().getCompleteSelection();
-    for (std::vector<SelectionSingleton::SelObj>::const_iterator it = array.begin(); it != array.end(); ++it) {
-        App::DocumentObject *ob=0;
-        ViewProvider *vp=0;
+    bool checkLink = true;
+    ViewProviderDocumentObject *vpLast = 0;
+    const auto &array = Gui::Selection().getCompleteSelection(false);
+    for(auto &sel : array) {
+        if(!sel.pObject) continue;
+        App::DocumentObject *parent = 0;
+        App::DocumentObject *ob = Gui::Selection().resolveObject(sel.pObject,sel.SubName,&parent);
+        if(!ob) continue;
+        if(parent) {
+            auto parentVp = Application::Instance->getViewProvider(parent);
+            if(parentVp) {
+                // For special case where the SubName reference can resolve to
+                // a non-child object (e.g. link array element), the tree view
+                // will select the parent instead.  So we shall show the
+                // property of the parent as well.
+                bool found = false;
+                for(auto child : parentVp->claimChildren()) {
+                    if(ob == child) {
+                        found = true;
+                        break;
+                    }
+                }
+                if(!found)
+                    ob = parent;
+            }
+        }
+
+        // Do not process an object more than once
+        if(!objSet.insert(ob).second)
+            continue;
 
         std::vector<App::Property*> dataList;
         std::map<std::string, App::Property*> viewList;
-        if ((*it).pObject) {
-            (*it).pObject->getPropertyList(dataList);
-            ob = (*it).pObject;
 
-            // get also the properties of the associated view provider
-            Gui::Document* doc = Gui::Application::Instance->getDocument(it->pDoc);
-            vp = doc->getViewProvider((*it).pObject);
-            if(!vp) continue;
-            // get the properties as map here because it doesn't matter to have them sorted alphabetically
-            vp->getPropertyMap(viewList);
+        auto vp = Application::Instance->getViewProvider(ob);
+        if(!vp) {
+            checkLink = false;
+            ob->getPropertyList(dataList);
+            continue;
         }
+
+        if(vp->isDerivedFrom(ViewProviderDocumentObject::getClassTypeId())) {
+            auto cvp = static_cast<ViewProviderDocumentObject*>(vp);
+            if(vpLast && cvp!=vpLast)
+                checkLink = false;
+            vpLast = cvp;
+        }
+
+        ob->getPropertyList(dataList);
+
+        // get the properties as map here because it doesn't matter to have them sorted alphabetically
+        vp->getPropertyMap(viewList);
 
         // store the properties with <name,id> as key in a map
         std::vector<App::Property*>::iterator pt;
         if (ob) {
             for (pt = dataList.begin(); pt != dataList.end(); ++pt) {
+                if (ob->isHidden(*pt) || (*pt)->testStatus(App::Property::Hidden)) 
+                    continue;
+
                 PropInfo nameType;
                 nameType.propName = ob->getPropertyName(*pt);
                 nameType.propId = (*pt)->getTypeId().getKey();
 
-                if (!ob->isHidden(*pt)) {
-                    std::vector<PropInfo>::iterator pi = std::find_if(propDataMap.begin(), propDataMap.end(), PropFind(nameType));
-                    if (pi != propDataMap.end()) {
-                        pi->propList.push_back(*pt);
-                    }
-                    else {
-                        nameType.propList.push_back(*pt);
-                        propDataMap.push_back(nameType);
-                    }
+                std::vector<PropInfo>::iterator pi = std::find_if(propDataMap.begin(), propDataMap.end(), PropFind(nameType));
+                if (pi != propDataMap.end()) {
+                    pi->propList.push_back(*pt);
+                }
+                else {
+                    nameType.propList.push_back(*pt);
+                    propDataMap.push_back(nameType);
                 }
             }
         }
@@ -238,19 +322,20 @@ void PropertyView::onSelectionChanged(const SelectionChanges& msg)
         if (vp) {
             std::map<std::string, App::Property*>::iterator pt;
             for (pt = viewList.begin(); pt != viewList.end(); ++pt) {
+                if (vp->isHidden(pt->second) || pt->second->testStatus(App::Property::Hidden))
+                    continue;
+
                 PropInfo nameType;
                 nameType.propName = pt->first;
                 nameType.propId = pt->second->getTypeId().getKey();
 
-                if (!vp->isHidden(pt->second)) {
-                    std::vector<PropInfo>::iterator pi = std::find_if(propViewMap.begin(), propViewMap.end(), PropFind(nameType));
-                    if (pi != propViewMap.end()) {
-                        pi->propList.push_back(pt->second);
-                    }
-                    else {
-                        nameType.propList.push_back(pt->second);
-                        propViewMap.push_back(nameType);
-                    }
+                std::vector<PropInfo>::iterator pi = std::find_if(propViewMap.begin(), propViewMap.end(), PropFind(nameType));
+                if (pi != propViewMap.end()) {
+                    pi->propList.push_back(pt->second);
+                }
+                else {
+                    nameType.propList.push_back(pt->second);
+                    propViewMap.push_back(nameType);
                 }
             }
         }
@@ -261,19 +346,64 @@ void PropertyView::onSelectionChanged(const SelectionChanges& msg)
     // name and id
     std::vector<PropInfo>::const_iterator it;
     PropertyModel::PropertyList dataProps;
-    for (it = propDataMap.begin(); it != propDataMap.end(); ++it) {
-        if (it->propList.size() == array.size()) {
-            dataProps.push_back(std::make_pair(it->propName, it->propList));
+    PropertyModel::PropertyList viewProps;
+
+    if(checkLink && vpLast) {
+        // In case the only selected object is a link, insert the link's own
+        // property before the linked object
+        App::DocumentObject *obj = vpLast->getObject();
+        auto linked = obj;
+        if(obj && obj->canLinkProperties() && (linked=obj->getLinkedObject(true))!=obj && linked) {
+            std::vector<App::Property*> dataList;
+            std::map<std::string, App::Property*> propMap;
+            obj->getPropertyMap(propMap);
+            linked->getPropertyList(dataList);
+            for(auto prop : dataList) {
+                if(linked->isHidden(prop) || prop->testStatus(App::Property::Hidden))
+                    continue;
+                std::string name(linked->getPropertyName(prop));
+                auto it = propMap.find(name);
+                if(it!=propMap.end() && 
+                   !it->second->testStatus(App::Property::Hidden) &&
+                   !obj->isHidden(it->second))
+                    continue;
+                std::vector<App::Property*> v(1,prop);
+                dataProps.push_back(std::make_pair(name, v));
+            }
+            auto vpLinked = Application::Instance->getViewProvider(linked);
+            if(vpLinked) {
+                propMap.clear();
+                vpLast->getPropertyMap(propMap);
+                dataList.clear();
+                vpLinked->getPropertyList(dataList);
+                for(auto prop : dataList) {
+                    if(vpLinked->isHidden(prop) || prop->testStatus(App::Property::Hidden))
+                        continue;
+                    std::string name(vpLinked->getPropertyName(prop));
+                    auto it = propMap.find(name);
+                    if(it!=propMap.end() && 
+                       !it->second->testStatus(App::Property::Hidden) &&
+                       !vpLast->isHidden(it->second))
+                        continue;
+                    std::vector<App::Property*> v(1,prop);
+                    viewProps.push_back(std::make_pair(name, v));
+                }
+            }
         }
     }
+
+    for (it = propDataMap.begin(); it != propDataMap.end(); ++it) {
+        if (it->propList.size() == array.size())
+            dataProps.push_back(std::make_pair(it->propName, it->propList));
+    }
+
     propertyEditorData->buildUp(dataProps);
 
-    PropertyModel::PropertyList viewProps;
     for (it = propViewMap.begin(); it != propViewMap.end(); ++it) {
-        if (it->propList.size() == array.size()) {
+        if (it->propList.size() == array.size())
             viewProps.push_back(std::make_pair(it->propName, it->propList));
-        }
     }
+
     propertyEditorView->buildUp(viewProps);
 }
 

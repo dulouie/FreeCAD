@@ -374,6 +374,45 @@ void GeoFeatureGroupExtension::recursiveCSRelevantLinks(const DocumentObject* ob
 }
 
 
+bool GeoFeatureGroupExtension::extensionGetSubObject(DocumentObject *&ret, const char *subname,
+        PyObject **pyObj, Base::Matrix4D *mat, bool transform, int depth) const 
+{
+    ret = 0;
+    const char *dot;
+    if(!subname || *subname==0) {
+        auto obj = dynamic_cast<const DocumentObject*>(getExtendedContainer());
+        ret = const_cast<DocumentObject*>(obj);
+        if(mat && transform) 
+            *mat *= const_cast<GeoFeatureGroupExtension*>(this)->placement().getValue().toMatrix();
+    }else if((dot=strchr(subname,'.'))) {
+        if(subname[0]!='$')
+            ret = Group.find(std::string(subname,dot).c_str());
+        else{
+            std::string name = std::string(subname+1,dot);
+            for(auto child : Group.getValues()) {
+                if(name == child->Label.getStrValue()){
+                    ret = child;
+                    break;
+                }
+            }
+        }
+        if(ret) {
+            if(mat && transform) 
+                *mat *= const_cast<GeoFeatureGroupExtension*>(this)->placement().getValue().toMatrix();
+            ret = ret->getSubObject(dot?dot+1:"",pyObj,mat,true,depth);
+        }
+    }
+    return true;
+}
+
+bool GeoFeatureGroupExtension::extensionGetSubObjects(std::vector<std::string>&ret) const {
+    for(auto obj : Group.getValues()) {
+        if(obj && obj->getNameInDocument())
+            ret.push_back(std::string(obj->getNameInDocument())+'.');
+    }
+    return true;
+}
+
 bool GeoFeatureGroupExtension::areLinksValid(const DocumentObject* obj) {
 
     if(!obj)

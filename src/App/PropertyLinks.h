@@ -29,6 +29,8 @@
 
 #include <vector>
 #include <string>
+#include <memory>
+#include <cinttypes>
 #include "Property.h"
 
 namespace Base {
@@ -38,6 +40,7 @@ class Writer;
 namespace App
 {
 class DocumentObject;
+class Document;
 
 /**
  * @brief Defines different scopes for which a link can be valid
@@ -112,9 +115,11 @@ public:
      */
     virtual ~PropertyLink();
 
+    void resetLink();
+
     /** Sets the property
      */
-    void setValue(App::DocumentObject *);
+    virtual void setValue(App::DocumentObject *);
 
     /** This method returns the linked DocumentObject
      */
@@ -168,9 +173,10 @@ public:
     PropertyLinkGlobal() {_pcScope = LinkScope::Global;};
 };
 
-class AppExport PropertyLinkList : public PropertyLists, public ScopedLink
+class AppExport PropertyLinkList : public PropertyListsT<DocumentObject*>, public ScopedLink
 {
     TYPESYSTEM_HEADER();
+    typedef PropertyListsT<DocumentObject*> inherited;
 
 public:
     /**
@@ -186,29 +192,15 @@ public:
     virtual ~PropertyLinkList();
 
     virtual void setSize(int newSize);
-    virtual int getSize(void) const;
+    virtual void setSize(int newSize, const_reference def);
 
     /** Sets the property
     */
-    void setValue(DocumentObject*);
-    void setValues(const std::vector<DocumentObject*>&);
+    void setValues(const std::vector<DocumentObject*>&) override;
 
-    /// index operator
-    DocumentObject* operator[] (const int idx) const {
-        return _lValueList.operator[] (idx);
-    }
-
-
-    void  set1Value(const int idx, DocumentObject* value) {
-        _lValueList.operator[] (idx) = value;
-    }
-
-    const std::vector<DocumentObject*> &getValues(void) const {
-        return _lValueList;
-    }
+    void set1Value(int idx, DocumentObject * const &value, bool touch=false) override;
 
     virtual PyObject *getPyObject(void);
-    virtual void setPyObject(PyObject *);
 
     virtual void Save(Base::Writer &writer) const;
     virtual void Restore(Base::XMLReader &reader);
@@ -220,8 +212,13 @@ public:
     virtual const char* getEditorName(void) const
     { return "Gui::PropertyEditor::PropertyLinkListItem"; }
 
-private:
-    std::vector<DocumentObject*> _lValueList;
+    DocumentObject *find(const char *, int *pindex=0) const;
+
+protected:
+    DocumentObject *getPyValue(PyObject *item) const override;
+
+protected:
+    mutable std::map<std::string, int> _nameMap;
 };
 
 /** The general Link Property with Child scope
@@ -298,6 +295,9 @@ public:
 
     virtual Property *Copy(void) const;
     virtual void Paste(const Property &from);
+
+    /// Return a copy of the property if any changes caused by importing external object 
+    Property *CopyOnImportExternal(const std::map<std::string,std::string> &nameMap) const;
 
     virtual unsigned int getMemSize (void) const{
         return sizeof(App::DocumentObject *);
@@ -396,6 +396,9 @@ public:
     virtual Property *Copy(void) const;
     virtual void Paste(const Property &from);
 
+    /// Return a copy of the property if any changes caused by importing external object 
+    Property *CopyOnImportExternal(const std::map<std::string,std::string> &nameMap) const;
+
     virtual unsigned int getMemSize (void) const;
 
 private:
@@ -421,6 +424,67 @@ class AppExport PropertyLinkSubListGlobal : public PropertyLinkSubList
 public:
     PropertyLinkSubListGlobal() {_pcScope = LinkScope::Global;};
 };
+
+/** Link to an (sub)object in the same or different document
+ */
+class AppExport PropertyXLink : public PropertyLinkGlobal
+{
+    TYPESYSTEM_HEADER();
+
+public:
+    PropertyXLink();
+
+    virtual ~PropertyXLink();
+
+    static std::vector<std::pair<PropertyXLink*,std::string> > updateLabel(
+            App::DocumentObject *obj, const char *newLabel);
+
+    void setValue(App::DocumentObject *) override;
+    void setValue(App::DocumentObject *, const char *subname, bool relative);
+    void setValue(const char *filePath, const char *objectName, const char *subname, bool relative);
+    const char *getSubName() const {return subName.c_str();}
+    void setSubName(const char *subname, bool transaction=true);
+    bool hasSubName() const {return !subName.empty();}
+
+    App::Document *getDocument() const;
+    const char *getDocumentPath() const;
+    const char *getObjectName() const;
+    bool isRestored() const;
+
+    virtual void Save (Base::Writer &writer) const;
+    virtual void Restore(Base::XMLReader &reader);
+
+    virtual Property *Copy(void) const;
+    virtual void Paste(const Property &from);
+
+    /// Return a copy of the property if any changes caused by importing external object 
+    Property *CopyOnImportExternal(const std::map<std::string,std::string> &nameMap) const;
+
+    virtual PyObject *getPyObject(void);
+    virtual void setPyObject(PyObject *);
+
+    class DocInfo;
+    friend class DocInfo;
+    typedef std::shared_ptr<DocInfo> DocInfoPtr;
+
+    static bool hasXLink(const App::Document *doc);
+    static std::map<App::Document*,std::set<App::Document*> > getDocumentOutList(App::Document *doc=0);
+    static std::map<App::Document*,std::set<App::Document*> > getDocumentInList(App::Document *doc=0);
+
+protected:
+    void unlink();
+    void detach();
+
+protected:
+    std::string filePath;
+    std::string objectName;
+    std::string subName;
+    std::string stamp;
+    bool relativePath;
+
+    DocInfoPtr docInfo;
+};
+
 
 } // namespace App
 

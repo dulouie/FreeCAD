@@ -37,8 +37,9 @@ namespace Gui {
 
 class ViewProviderDocumentObject;
 class DocumentObjectItem;
-typedef std::set<DocumentObjectItem*> DocumentObjectItems;
-typedef std::shared_ptr<DocumentObjectItems> DocumentObjectItemsPtr;
+class DocumentObjectData;
+typedef std::shared_ptr<DocumentObjectData> DocumentObjectDataPtr;
+
 class DocumentItem;
 
 /// highlight modes for the tree items
@@ -65,20 +66,38 @@ class TreeWidget : public QTreeWidget, public SelectionObserver
     Q_OBJECT
 
 public:
-    TreeWidget(QWidget* parent=0);
+    TreeWidget(const char *name, QWidget* parent=0);
     ~TreeWidget();
 
     void scrollItemToTop(Gui::Document*);
-    void setItemsSelected (const QList<QTreeWidgetItem *> items, bool select);
+    void selectAllInstances(const ViewProviderDocumentObject &vpd);
+    void selectLinkedObject(App::DocumentObject *obj, bool recurse); 
+    void selectAllLinks(App::DocumentObject *obj); 
+
+    /* Return a list of selected object of a give document and their parent
+     *
+     * This function can return the non-group parent of the selected object,
+     * which Gui::Selection() cannot provide.
+     */
+    static std::vector<std::pair<ViewProviderDocumentObject*,ViewProviderDocumentObject*> > 
+        getSelection(App::Document *doc);
 
     static const int DocumentType;
     static const int ObjectType;
 
     void markItem(const App::DocumentObject* Obj,bool mark);
+    void syncView();
+
+    const char *getTreeName() const;
+
+    static void updateStatus(bool delay=false);
+
+    DocumentItem *getDocumentItem(const Gui::Document *) const;
 
 protected:
     /// Observer message from the Selection
     void onSelectionChanged(const SelectionChanges& msg);
+    void syncSelection(const char *pDocName=0);
     void contextMenuEvent (QContextMenuEvent * e);
     void drawRow(QPainter *, const QStyleOptionViewItem &, const QModelIndex &) const;
     /** @name Drag and drop */
@@ -97,6 +116,11 @@ protected:
     void keyPressEvent(QKeyEvent *event);
     void mouseDoubleClickEvent(QMouseEvent * event);
 
+protected:
+    void showEvent(QShowEvent *) override;
+    void hideEvent(QHideEvent *) override;
+    void _updateStatus(bool delay=false);
+
 protected Q_SLOTS:
     void onCreateGroup();
     void onRelabelObject();
@@ -105,13 +129,17 @@ protected Q_SLOTS:
     void onFinishEditing();
     void onSkipRecompute(bool on);
     void onMarkRecompute();
+    void onSyncSelection();
+    void onSyncView();
+    void onShowHidden();
+    void onHideInTree();
 
 private Q_SLOTS:
     void onItemSelectionChanged(void);
     void onItemEntered(QTreeWidgetItem * item);
     void onItemCollapsed(QTreeWidgetItem * item);
     void onItemExpanded(QTreeWidgetItem * item);
-    void onTestStatus(void);
+    void onUpdateStatus(void);
 
 private:
     void slotNewDocument(const Gui::Document&);
@@ -119,8 +147,11 @@ private:
     void slotRenameDocument(const Gui::Document&);
     void slotActiveDocument(const Gui::Document&);
     void slotRelabelDocument(const Gui::Document&);
+    void slotShowHidden(const Gui::Document &);
+    void slotChangedViewObject(const Gui::ViewProvider &, const App::Property &);
 
     void changeEvent(QEvent *e);
+    void setupText();
 
 private:
     QAction* createGroupAction;
@@ -128,13 +159,23 @@ private:
     QAction* finishEditingAction;
     QAction* skipRecomputeAction;
     QAction* markRecomputeAction;
+    QAction* syncSelectionAction;
+    QAction* syncViewAction;
+    QAction* showHiddenAction;
+    QAction* hideInTreeAction;
     QTreeWidgetItem* contextItem;
-
+    DocumentObjectItem *editingItem;
+    DocumentItem *currentDocItem;
     QTreeWidgetItem* rootItem;
     QTimer* statusTimer;
     static QPixmap* documentPixmap;
     std::map<const Gui::Document*,DocumentItem*> DocumentMap;
     bool fromOutside;
+    int statusUpdateDelay;
+
+    std::string myName; // for debugging purpose
+
+    friend class DocumentItem;
 };
 
 /** The link between the tree and a document.
@@ -149,14 +190,29 @@ public:
     ~DocumentItem();
 
     const Gui::Document* document() const;
-    void setObjectHighlighted(const char*, bool);
-    void setObjectSelected(const char*, bool);
     void clearSelection(void);
-    void updateSelection(void);
-    void selectItems(void);
+    void updateSelection(QTreeWidgetItem *, bool unselect=false);
+    void updateSelection();
+    void updateItemSelection(DocumentObjectItem *);
+    void selectItems(bool sync);
     void testStatus(void);
     void setData(int column, int role, const QVariant & value);
     void populateItem(DocumentObjectItem *item, bool refresh = false);
+    void populateObject(App::DocumentObject *obj);
+    void selectAllInstances(const ViewProviderDocumentObject &vpd);
+    bool showItem(DocumentObjectItem *item, bool select);
+    void updateItemsVisibility(QTreeWidgetItem *item, bool show);
+    void setItemVisibility(const Gui::ViewProviderDocumentObject&);
+    void updateLinks(const ViewProviderDocumentObject &view);
+    ViewProviderDocumentObject *getViewProvider(App::DocumentObject *);
+    void onDeleteDocument(DocumentItem *docItem);
+    void checkRemoveChildrenFromRoot(const ViewProviderDocumentObject& view);
+
+    bool showHidden() const;
+    void setShowHidden(bool show);
+
+    TreeWidget *getTree() const;
+    const char *getTreeName() const;
 
 protected:
     /** Adds a view provider to the document item.
@@ -166,8 +222,8 @@ protected:
     /** Removes a view provider from the document item.
      * If this view provider is not added nothing happens.
      */
-    void slotDeleteObject    (const Gui::ViewProviderDocumentObject&);
-    void slotChangeObject    (const Gui::ViewProviderDocumentObject&);
+    void slotDeleteObject    (const Gui::ViewProviderDocumentObject&, bool boradcast);
+    void slotChangeObject    (const Gui::ViewProviderDocumentObject&, const App::Property &prop);
     void slotRenameObject    (const Gui::ViewProviderDocumentObject&);
     void slotActiveObject    (const Gui::ViewProviderDocumentObject&);
     void slotInEdit          (const Gui::ViewProviderDocumentObject&);
@@ -176,13 +232,21 @@ protected:
     void slotExpandObject    (const Gui::ViewProviderDocumentObject&,const Gui::TreeItemMode&);
     void slotScrollToObject  (const Gui::ViewProviderDocumentObject&);
 
+    bool updateObject(const Gui::ViewProviderDocumentObject&, const App::Property &prop);
+
     bool createNewItem(const Gui::ViewProviderDocumentObject&, 
                     QTreeWidgetItem *parent=0, int index=-1, 
-                    DocumentObjectItemsPtr ptrs = DocumentObjectItemsPtr());
-        
+                    DocumentObjectDataPtr ptrs = DocumentObjectDataPtr());
+
+    void findSelection(bool sync, DocumentObjectItem *item, const char *subname);
+
+    typedef std::map<const ViewProvider *, std::vector<ViewProviderDocumentObject*> > ParentMap;
+    void populateParents(const ViewProvider *vp, ParentMap &);
+
 private:
+    const char *treeName; // for debugging purpose
     const Gui::Document* pDocument;
-    std::map<std::string,DocumentObjectItemsPtr> ObjectMap;
+    std::map<App::DocumentObject*,DocumentObjectDataPtr> ObjectMap;
 
     typedef boost::BOOST_SIGNALS_NAMESPACE::connection Connection;
     Connection connectNewObject;
@@ -195,6 +259,8 @@ private:
     Connection connectHltObject;
     Connection connectExpObject;
     Connection connectScrObject;
+
+    friend class TreeWidget;
 };
 
 /** The link between the tree and a document object.
@@ -205,31 +271,59 @@ private:
 class DocumentObjectItem : public QTreeWidgetItem
 {
 public:
-    DocumentObjectItem(Gui::ViewProviderDocumentObject* pcViewProvider, 
-                       DocumentObjectItemsPtr selves);
+    DocumentObjectItem(DocumentItem *ownerDocItem, DocumentObjectDataPtr data);
     ~DocumentObjectItem();
 
     Gui::ViewProviderDocumentObject* object() const;
-    void testStatus();
+    void testStatus(bool resetStatus, QIcon &icon1, QIcon &icon2);
+    void testStatus(bool resetStatus);
     void displayStatusInfo();
     void setExpandedStatus(bool);
     void setData(int column, int role, const QVariant & value);
     bool isChildOfItem(DocumentObjectItem*);
 
-protected:
-    void slotChangeIcon();
-    void slotChangeToolTip(const QString&);
-    void slotChangeStatusTip(const QString&);
+    // Get the parent document (where the object is stored) of this item
+    DocumentItem *getParentDocument() const;
+    // Get the owner document (where the object is displayed, either stored or
+    // linked in) of this object
+    DocumentItem *getOwnerDocument() const;
+
+    // check if a new item is required at root
+    bool requiredAtRoot(bool excludeSelf=true) const;
+    
+    // return the owner, and full quanlified subname
+    App::DocumentObject *getFullSubName(std::ostringstream &str,
+            DocumentObjectItem *parent = 0) const;
+
+    // return the immediate decendent of the common ancestor of this item and
+    // 'cousin'.
+    App::DocumentObject *getRelativeParent(std::ostringstream &str,
+            DocumentObjectItem *cousin) const;
+
+    // return the top most linked group owner's name, and subname.  This method
+    // is necssary despite have getFullSubName above is because native geo group
+    // cannot handle selection with sub name. So only a linked group can have
+    // subname in selection
+    int getSubName(std::ostringstream &str, App::DocumentObject *&topParent) const;
+
+    const char *getName() const;
+    const char *getTreeName() const;
+
+    bool isLink() const;
+    bool isLinkFinal() const;
+    bool isParentLink() const;
+    int isGroup() const;
+    int isParentGroup() const;
+
+    DocumentObjectItem *getParentItem() const;
+    TreeWidget *getTree() const;
 
 private:
-    typedef boost::BOOST_SIGNALS_NAMESPACE::connection Connection;
+    DocumentItem *myOwner;
+    DocumentObjectDataPtr myData;
+    std::string mySub;
     int previousStatus;
-    Gui::ViewProviderDocumentObject* viewObject;
-    Connection connectIcon;
-    Connection connectTool;
-    Connection connectStat;
-
-    DocumentObjectItemsPtr myselves;
+    int selected;
     bool populated;
 
     friend class TreeWidget;
@@ -256,4 +350,3 @@ private:
 
 
 #endif // GUI_TREE_H
-

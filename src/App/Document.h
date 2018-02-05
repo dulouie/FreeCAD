@@ -68,7 +68,8 @@ public:
         KeepTrailingDigits = 1,
         Closable = 2,
         Restoring = 3,
-        Recomputing = 4
+        Recomputing = 4,
+        Importing = 5,
     };
 
     /** @name Properties */
@@ -108,6 +109,8 @@ public:
     PropertyLink Tip;
     /// Tip object of the document (if any)
     PropertyString TipName;
+    /// Whether to show hidden items in TreeView
+    PropertyBool ShowHidden;
     //@}
 
     /** @name Signals of the document */
@@ -119,6 +122,8 @@ public:
     boost::signal<void (const App::DocumentObject&)> signalDeletedObject;
     /// signal on changed Object
     boost::signal<void (const App::DocumentObject&, const App::Property&)> signalChangedObject;
+    /// signal on manually called DocumentObject::touch()
+    boost::signal<void (const App::DocumentObject&)> signalTouchedObject;
     /// signal on relabeled Object
     boost::signal<void (const App::DocumentObject&)> signalRelabelObject;
     /// signal on activated Object
@@ -144,9 +149,11 @@ public:
                         Base::Writer   &)> signalExportViewObjects;
     boost::signal<void (const std::vector<App::DocumentObject*>&,
                         Base::XMLReader&)> signalImportObjects;
+    boost::signal<void (const std::vector<App::DocumentObject*>&)> signalFinishImportObjects;
     boost::signal<void (const std::vector<App::DocumentObject*>&, Base::Reader&,
                         const std::map<std::string, std::string>&)> signalImportViewObjects;
     boost::signal<void (const App::Document&)> signalRecomputed;
+    boost::signal<void (const App::DocumentObject&)> signalFinishRestoreObject;
     //@}
 
     /** @name File handling of the document */
@@ -158,10 +165,31 @@ public:
     bool saveAs(const char* file);
     bool saveCopy(const char* file);
     /// Restore the document from the file in Property Path
-    void restore (void);
-    void exportObjects(const std::vector<App::DocumentObject*>&, std::ostream&);
+    void restore (bool delaySignal=false);
+    void afterRestore(bool checkXLink=false);
+    void afterRestore(const std::vector<App::DocumentObject *> &, bool checkXLink=false);
+    enum ExportStatus {
+        NotExporting,
+        Exporting,
+        ExportKeepExternal,
+    };
+    ExportStatus isExporting() const;
+    void exportObjects(const std::vector<App::DocumentObject*>&, std::ostream&, bool keepExternal=false);
     void exportGraphviz(std::ostream&) const;
     std::vector<App::DocumentObject*> importObjects(Base::XMLReader& reader);
+    /** Import any externally linked objects
+     *
+     * @param objs: input list of objects. Only objects belonging to this document will
+     * be checked for external links. And all found external linked object will be imported
+     * to this document. Link type properties of those input objects will be automatically 
+     * reassigned to the imported objects. Note that the link properties of other objects
+     * in the document but not included in the input list, will not be affected even if they
+     * point to some object beining imported. To import all objects, simply pass in all objects
+     * of this document.
+     *
+     * @return the list of imported objects
+     */
+    std::vector<App::DocumentObject*> importLinks(const std::vector<App::DocumentObject*> &objs);
     /// Opens the document from its file name
     //void open (void);
     /// Is the document already saved to a file?
@@ -183,8 +211,9 @@ public:
      * @param sType       the type of created object
      * @param pObjectName if nonNULL use that name otherwise generate a new unique name based on the \a sType
      * @param isNew       if false don't call the \c DocumentObject::setupObject() callback (default is true)
+     * @param viewType    override object's view provider name
      */
-    DocumentObject *addObject(const char* sType, const char* pObjectName=0, bool isNew=true);
+    DocumentObject *addObject(const char* sType, const char* pObjectName=0, bool isNew=true, const char *viewType=0);
     /** Add an array of features of the given types and names.
      * Unicode names are set through the Label property.
      * @param sType       The type of created object
@@ -204,12 +233,17 @@ public:
     void addObject(DocumentObject*, const char* pObjectName=0);
     
 
-    /** Copy an object from another document to this document
-     * If \a recursive is true then all objects this object depends on
-     * are copied as well. By default \a recursive is false.
-     * Returns the copy of the object or 0 if the creation failed.
+    /** Copy objects from another document to this document
+     *
+     * @param recursive: if true, then all objects this object depends on are
+     * copied as well. By default \a recursive is false.
+     *
+     * @param keepExternal: if true, then do not copy externally linked objects.
+     *
+     * @return Returns the list of objects copied.
      */
-    DocumentObject* copyObject(DocumentObject* obj, bool recursive=false);
+    std::vector<DocumentObject*> copyObject(const std::vector<DocumentObject*> &objs, 
+            bool recursive=false, bool keepExternal=true);
     /** Move an object from another document to this document
      * If \a recursive is true then all objects this object depends on
      * are moved as well. By default \a recursive is false.
@@ -249,16 +283,22 @@ public:
     void purgeTouched();
     /// check if there is any touched object in this document
     bool isTouched(void) const;
+    /// check if there is any object must execute in this document
+    bool mustExecute(void) const;
     /// returns all touched objects
     std::vector<App::DocumentObject *> getTouched(void) const;
     /// set the document to be closable, this is on by default.
     void setClosable(bool);
     /// check whether the document can be closed
     bool isClosable() const;
-    /// Recompute all touched features and return the amount of recalculated features
-    int recompute();
+    /** Recompute touched features and return the amount of recalculated features
+     *
+     * @param objs: specify a sub set of objects to recompute. If empty, then
+     * all object in this document is checked for recompute
+     */
+    int recompute(const std::vector<App::DocumentObject*> &objs=std::vector<App::DocumentObject*>());
     /// Recompute only one feature
-    void recomputeFeature(DocumentObject* Feat);
+    void recomputeFeature(DocumentObject* Feat,bool recursive=false);
     /// get the error log from the recompute run
     const std::vector<App::DocumentObjectExecReturn*> &getRecomputeLog(void)const{return _RecomputeLog;}
     /// get the text of the error of a specified object
@@ -270,7 +310,22 @@ public:
     //@}
 
 
-    /** @name methods for the UNDO REDO and Transaction handling */
+    /** @name methods for the UNDO REDO and Transaction handling 
+     *
+     * Introduce a new concept of transaction ID. Each transaction must be
+     * unique inside the document. Multiple transactions from different
+     * documents can be grouped together with the same transaction ID.
+     *
+     * When undo, Gui component can query getAvailableUndo(id) to see if it is
+     * possible to undo with a given ID. If there more than one undo
+     * transactions, meaning that there are other transactions before the given
+     * ID. The Gui component shall ask user if he wants to undo multiple steps.
+     * And if the user agrees, call undo(id) to unroll all transaction before
+     * and including the the one with the give ID. Same apllies for redo.
+     *
+     * The new transaction ID describe here is fully backward compatible.
+     * Calling the APIs with a default id=0 gives the original behavior.
+     */
     //@{
     /// switch the level of Undo/Redo
     void setUndoMode(int iMode);
@@ -278,14 +333,33 @@ public:
     int getUndoMode(void) const;
     /// switch the tranaction mode
     void setTransactionMode(int iMode);
-    /// Open a new command Undo/Redo, an UTF-8 name can be specified
+    /** Open a new command Undo/Redo, an UTF-8 name can be specified
+     *
+     * @param name: transaction name
+     *
+     * If BaseApp->Preference->Document->AutoTransaction is enabled, this
+     * function calls App::Application::setActiveTransaction(name) instead.
+     */
     void openTransaction(const char* name=0);
+    /** Open a new command Undo/Redo, an UTF-8 name can be specified
+     *
+     * @param name: transaction name
+     * @param id: transaction ID, if 0 then the ID is auto generated.
+     *
+     * @return: Return the ID of the new transaction.
+     *
+     * This function creates an actual transaction regardless of Application
+     * AutoTransaction setting.
+     */
+    int _openTransaction(const char* name=0, int id=0);
     // Commit the Command transaction. Do nothing If there is no Command transaction open.
     void commitTransaction();
     /// Abort the actually running transaction.
     void abortTransaction();
     /// Check if a transaction is open
     bool hasPendingTransaction() const;
+    /// Return the undo/redo transaction ID starting from the back
+    int getTransactionID(bool undo, unsigned pos=0) const;
     /// Set the Undo limit in Byte!
     void setUndoLimit(unsigned int UndoMemSize=0);
     /// Returns the actual memory consumption of the Undo redo stuff.
@@ -297,17 +371,17 @@ public:
     /// Remove all stored Undos and Redos
     void clearUndos();
     /// Returns the number of stored Undos. If greater than 0 Undo will be effective.
-    int getAvailableUndos() const;
+    int getAvailableUndos(int id=0) const;
     /// Returns a list of the Undo names
     std::vector<std::string> getAvailableUndoNames() const;
     /// Will UNDO one step, returns False if no undo was done (Undos == 0).
-    bool undo();
+    bool undo(int id=0);
     /// Returns the number of stored Redos. If greater than 0 Redo will be effective.
-    int getAvailableRedos() const;
+    int getAvailableRedos(int id=0) const;
     /// Returns a list of the Redo names.
     std::vector<std::string> getAvailableRedoNames() const;
     /// Will REDO one step, returns False if no redo was done (Redos == 0).
-    bool redo() ;
+    bool redo(int id=0) ;
     /// returns true if the document is in an Transaction phase, e.g. currently performing a redo/undo or rollback
     bool isPerformingTransaction() const;
     /// \internal remove property from a transactional object with name \a name
@@ -322,11 +396,24 @@ public:
     bool checkOnCycle(void);
     /// get a list of all objects linking to the given object
     std::vector<App::DocumentObject*> getInList(const DocumentObject* me) const;
-    /// Get a complete list of all objects the given objects depend on. The list
-    /// also contains the given objects!
-    /// deprecated! Use In- and OutList mimic in the DocumentObject instead!
-    std::vector<App::DocumentObject*> getDependencyList
-        (const std::vector<App::DocumentObject*>&) const;
+    /** Get a complete list of all objects the given objects depend on. 
+     *
+     * This function is defined as static because it accpets objects from
+     * different documents, and the returned list will contain dependent
+     * objects from all relavent documents
+     *
+     * @param objs: input objects to query for dependency. 
+     * @param noExternal: if true, exclude any external dependencies
+     * @param sort: if true, return a topologically sorted list
+     * @param hasExternal: if non zero, return true if there is any external
+     * dependency found regardless if 'noExternal' is true or not.
+     */
+    static std::vector<App::DocumentObject*> getDependencyList
+        (const std::vector<App::DocumentObject*> &objs,
+         bool noExternal=false, bool sort=false, bool *hasExternal=0);
+
+    std::vector<App::Document*> getDependentDocuments(bool sort=true);
+
     // set Changed
     //void setChanged(DocumentObject* change);
     /// get a list of topological sorted objects (https://en.wikipedia.org/wiki/Topological_sorting)
@@ -337,6 +424,21 @@ public:
     std::vector<std::list<App::DocumentObject*> > getPathsByOutList
     (const App::DocumentObject* from, const App::DocumentObject* to) const;
     //@}
+
+    /** Return the object linked to this object
+     *
+     * @param links: holds the links found
+     * @param recursive: whether to find indirectly linked links
+     * @param maxCount: limit the number of links returned, 0 means no limit
+     */
+    void getLinksTo(std::set<DocumentObject*> &links, 
+            const DocumentObject *obj, bool recursive, int maxCount=0) const;
+
+    bool hasLinksTo(const DocumentObject *obj) const {
+        std::set<DocumentObject *> links;
+        getLinksTo(links,obj,false,1);
+        return !links.empty();
+    }
 
     /// Function called to signal that an object identifier has been renamed
     void renameObjectIdentifiers(const std::map<App::ObjectIdentifier, App::ObjectIdentifier> & paths, const std::function<bool(const App::DocumentObject*)> &selector = [](const App::DocumentObject *) { return true; });
@@ -360,7 +462,7 @@ protected:
     void _removeObject(DocumentObject* pcObject);
     void _addObject(DocumentObject* pcObject, const char* pObjectName);
     /// checks if a valid transaction is open
-    void _checkTransaction(DocumentObject* pcObject);
+    void _checkTransaction(DocumentObject* pcDelObj, const Property *What, int line);
     void breakDependency(DocumentObject* pcObject, bool clear);
     std::vector<App::DocumentObject*> readObjects(Base::XMLReader& reader);
     void writeObjects(const std::vector<App::DocumentObject*>&, Base::Writer &writer) const;
@@ -376,14 +478,18 @@ protected:
     void _clearRedos();
 
     /// refresh the internal dependency graph
-    void _rebuildDependencyList(void);
+    void _rebuildDependencyList(
+        const std::vector<App::DocumentObject*> &objs = std::vector<App::DocumentObject*>());
+
     std::string getTransientDirectoryName(const std::string& uuid, const std::string& filename) const;
 
 
 private:
     // # Data Member of the document +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     std::list<Transaction*> mUndoTransactions;
+    std::map<int,Transaction*> mUndoMap;
     std::list<Transaction*> mRedoTransactions;
+    std::map<int,Transaction*> mRedoMap;
     // recompute log
     std::vector<App::DocumentObjectExecReturn*> _RecomputeLog;
 

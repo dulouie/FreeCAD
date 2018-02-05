@@ -25,6 +25,7 @@
 #ifndef _PreComp_
 # include <algorithm>
 # include <QApplication>
+# include <QThread>
 # include <QBuffer>
 # include <QByteArray>
 # include <QClipboard>
@@ -116,6 +117,8 @@
 #include "View3DInventor.h"
 #include "View3DInventorViewer.h"
 
+FC_LOG_LEVEL_INIT("MainWindow",false,true,true);
+
 #if defined(Q_OS_WIN32)
 #define slots
 //#include <private/qmainwindowlayout_p.h>
@@ -131,12 +134,43 @@ MainWindow* MainWindow::instance = 0L;
 
 namespace Gui {
 
+/**
+ * The CustomMessageEvent class is used to send messages as events in the methods  
+ * Error(), Warning() and Message() of the StatusBarObserver class to the main window 
+ * to display them on the status bar instead of printing them directly to the status bar.
+ *
+ * This makes the usage of StatusBarObserver thread-safe.
+ * @author Werner Mayer
+ */
+class CustomMessageEvent : public QEvent
+{
+public:
+    enum Type {None, Err, Wrn, Pane, Msg, Log, Tmp};
+    CustomMessageEvent(Type t, const QString& s, int timeout=0)
+      : QEvent(QEvent::User), _type(t), msg(s), _timeout(timeout)
+    { }
+    ~CustomMessageEvent()
+    { }
+    Type type() const
+    { return _type; }
+    const QString& message() const
+    { return msg; }
+    int timeout() const
+    { return _timeout; }
+private:
+    Type _type;
+    QString msg;
+    int _timeout;
+};
+
+// -------------------------------------
 // Pimpl class
 struct MainWindowP
 {
     QLabel* sizeLabel;
     QLabel* actionLabel;
     QTimer* actionTimer;
+    QTimer* statusTimer;
     QTimer* activityTimer;
     QTimer* visibleTimer;
     QMdiArea* mdiArea;
@@ -147,6 +181,8 @@ struct MainWindowP
     bool whatsthis;
     QString whatstext;
     Assistant* assistant;
+    int currentStatusType = 100;
+    int actionUpdateDelay = 0;
 };
 
 class MDITabbar : public QTabBar
@@ -274,6 +310,9 @@ MainWindow::MainWindow(QWidget * parent, Qt::WindowFlags f)
     d->mdiArea->setBackground(QBrush(QColor(160,160,160)));
     setCentralWidget(d->mdiArea);
 
+    statusBar()->setObjectName(QString::fromLatin1("statusBar"));
+    connect(statusBar(), SIGNAL(messageChanged(const QString &)), this, SLOT(statusMessageChanged()));
+
     // labels and progressbar
     d->status = new StatusBarObserver();
     d->actionLabel = new QLabel(statusBar());
@@ -290,12 +329,17 @@ MainWindow::MainWindow(QWidget * parent, Qt::WindowFlags f)
     d->actionTimer->setObjectName(QString::fromLatin1("actionTimer"));
     connect(d->actionTimer, SIGNAL(timeout()), d->actionLabel, SLOT(clear()));
 
+    // clear status type
+    d->statusTimer = new QTimer( this );
+    d->statusTimer->setObjectName(QString::fromLatin1("statusTimer"));
+    connect(d->statusTimer, SIGNAL(timeout()), this, SLOT(clearStatus()));
+
     // update gui timer
     d->activityTimer = new QTimer(this);
     d->activityTimer->setObjectName(QString::fromLatin1("activityTimer"));
-    connect(d->activityTimer, SIGNAL(timeout()),this, SLOT(updateActions()));
+    connect(d->activityTimer, SIGNAL(timeout()),this, SLOT(_updateActions()));
     d->activityTimer->setSingleShot(false);
-    d->activityTimer->start(300);
+    d->activityTimer->start(150);
 
     // show main window timer
     d->visibleTimer = new QTimer(this);
@@ -519,6 +563,7 @@ void MainWindow::activateWorkbench(const QString& name)
 {
     // emit this signal
     workbenchActivated(name);
+    updateActions(true);
 }
 
 void MainWindow::whatsThis()
@@ -612,6 +657,10 @@ bool MainWindow::event(QEvent *e)
             qApp->sendEvent(viewWidget, &anotherEvent);
         }
         return true;
+    }else if(e->type() == QEvent::StatusTip) {
+        // make sure warning and error message don't get blocked by tooltips
+        if(std::abs(d->currentStatusType) <= CustomMessageEvent::Wrn)
+            return true;
     }
     return QMainWindow::event(e);
 }
@@ -800,6 +849,8 @@ void MainWindow::onSetActiveSubWindow(QWidget *window)
 
 void MainWindow::setActiveWindow(MDIView* view)
 {
+    if(d->activeView == view)
+        return;
     onSetActiveSubWindow(view->parentWidget());
     d->activeView = view;
     Application::Instance->viewActivated(view);
@@ -918,19 +969,6 @@ QList<QWidget*> MainWindow::windows(QMdiArea::WindowOrder order) const
         mdis << (*it)->widget();
     }
     return mdis;
-}
-
-// set text to the pane
-void MainWindow::setPaneText(int i, QString text)
-{
-    if (i==1) {
-        d->actionLabel->setText(text);
-        d->actionTimer->setSingleShot(true);
-        d->actionTimer->start(5000);
-    }
-    else if (i==2) {
-        d->sizeLabel->setText(text);
-    }
 }
 
 MDIView* MainWindow::activeWindow(void) const
@@ -1076,11 +1114,27 @@ void MainWindow::appendRecentFile(const QString& filename)
     }
 }
 
-void MainWindow::updateActions()
+void MainWindow::updateActions(bool delay) {
+    //make it safe to call before the main window is actually created
+    if(!this)
+        return;
+    if(!d->activityTimer->isActive())
+        d->activityTimer->start(150);
+    else if(delay) {
+        if(!d->actionUpdateDelay)
+            d->actionUpdateDelay=1;
+    }else
+        d->actionUpdateDelay=-1;
+}
+
+void MainWindow::_updateActions()
 {
-    if (isVisible()) {
+    if (isVisible() && d->actionUpdateDelay<=0) {
+        FC_LOG("update actions");
+        d->activityTimer->stop();
         Application::Instance->commandManager().testActive();
     }
+    d->actionUpdateDelay = 0;
 }
 
 void MainWindow::switchToTopLevelMode()
@@ -1299,30 +1353,26 @@ void MainWindow::dragEnterEvent (QDragEnterEvent * e)
     }
 }
 
+static QLatin1String _MimeDocObj("application/x-documentobject");
+static QLatin1String _MimeDocObjX("application/x-documentobject-x");
+static QLatin1String _MimeDocObjFile("application/x-documentobject-file");
+static QLatin1String _MimeDocObjXFile("application/x-documentobject-x-file");
+
 QMimeData * MainWindow::createMimeDataFromSelection () const
 {
-    std::vector<SelectionSingleton::SelObj> selobj = Selection().getCompleteSelection();
-    std::set<App::DocumentObject*> unique_objs;
-    std::map< App::Document*, std::vector<App::DocumentObject*> > objs;
-    for (std::vector<SelectionSingleton::SelObj>::iterator it = selobj.begin(); it != selobj.end(); ++it) {
-        if (it->pObject && it->pObject->getDocument()) {
-            if (unique_objs.insert(it->pObject).second)
-                objs[it->pObject->getDocument()].push_back(it->pObject);
-        }
+    std::vector<App::DocumentObject*> sel;
+    std::set<App::DocumentObject*> objSet;
+    for(auto &s : Selection().getCompleteSelection()) {
+        if(s.pObject && s.pObject->getNameInDocument() && objSet.insert(s.pObject).second)
+            sel.push_back(s.pObject);
     }
-
-    if (objs.empty())
+    if(sel.empty())
         return 0;
 
-    std::vector<App::DocumentObject*> sel; // selected
-    std::vector<App::DocumentObject*> all; // object sub-graph
-    for (std::map< App::Document*, std::vector<App::DocumentObject*> >::iterator it = objs.begin(); it != objs.end(); ++it) {
-        std::vector<App::DocumentObject*> dep = it->first->getDependencyList(it->second);
-        sel.insert(sel.end(), it->second.begin(), it->second.end());
-        all.insert(all.end(), dep.begin(), dep.end());
-    }
-
-    if (all.size() > sel.size()) {
+    bool keepExternal = false;
+    auto internal = App::Document::getDependencyList(sel,true);
+    auto all = App::Document::getDependencyList(sel,false);
+    if (internal.size() > sel.size()) {
         //check if selection are only geofeaturegroup objects, for them it is intuitive and wanted to copy the 
         //dependencies
         bool hasGroup = false, hasNormal = false;
@@ -1333,7 +1383,7 @@ QMimeData * MainWindow::createMimeDataFromSelection () const
                 hasNormal = true;
         }
         if(hasGroup && !hasNormal) {
-            sel = all;
+            sel.swap(internal);
         }
         else {
             //if there are normal objects selected it may be possible that some dependencies are 
@@ -1343,10 +1393,22 @@ QMimeData * MainWindow::createMimeDataFromSelection () const
                 tr("The selected objects have a dependency to unselected objects.\n"
                 "Do you want to copy them, too?"),
                 QMessageBox::Yes,QMessageBox::No);
-            if (ret == QMessageBox::Yes) {
-                sel = all;
-            }
+            if (ret == QMessageBox::Yes)
+                sel.swap(internal);
+            else 
+                keepExternal = true;
         }
+    }
+    if(!keepExternal && all.size() > sel.size()) {
+        int ret = QMessageBox::question(getMainWindow(),
+            tr("Object dependencies"),
+            tr("The selected objects contain dependencies in external documents.\n"
+               "Do you want to copy the external objects, too?"),
+            QMessageBox::Yes,QMessageBox::No);
+        if (ret == QMessageBox::Yes) 
+            sel.swap(all);
+        else
+            keepExternal = true;
     }
 
     unsigned int memsize=1000; // ~ for the meta-information
@@ -1366,22 +1428,22 @@ QMimeData * MainWindow::createMimeDataFromSelection () const
     WaitCursor wc;
     QString mime;
     if (use_buffer) {
-        mime = QLatin1String("application/x-documentobject");
+        mime = keepExternal?_MimeDocObjX:_MimeDocObj;
         Base::ByteArrayOStreambuf buf(res);
         std::ostream str(&buf);
         // need this instance to call MergeDocuments::Save()
         App::Document* doc = sel.front()->getDocument();
         MergeDocuments mimeView(doc);
-        doc->exportObjects(sel, str);
+        doc->exportObjects(sel, str, keepExternal);
     }
     else {
-        mime = QLatin1String("application/x-documentobject-file");
+        mime = keepExternal?_MimeDocObjXFile:_MimeDocObjFile;
         static Base::FileInfo fi(App::Application::getTempFileName());
         Base::ofstream str(fi, std::ios::out | std::ios::binary);
         // need this instance to call MergeDocuments::Save()
         App::Document* doc = sel.front()->getDocument();
         MergeDocuments mimeView(doc);
-        doc->exportObjects(sel, str);
+        doc->exportObjects(sel, str, keepExternal);
         str.close();
         res = fi.filePath().c_str();
 
@@ -1400,18 +1462,47 @@ bool MainWindow::canInsertFromMimeData (const QMimeData * source) const
     if (!source)
         return false;
     return source->hasUrls() || 
-        source->hasFormat(QLatin1String("application/x-documentobject")) ||
-        source->hasFormat(QLatin1String("application/x-documentobject-file"));
+        source->hasFormat(_MimeDocObj) || source->hasFormat(_MimeDocObjX) ||
+        source->hasFormat(_MimeDocObjFile) || source->hasFormat(_MimeDocObjXFile);
 }
 
 void MainWindow::insertFromMimeData (const QMimeData * mimeData)
 {
     if (!mimeData)
         return;
-    if (mimeData->hasFormat(QLatin1String("application/x-documentobject"))) {
-        QByteArray res = mimeData->data(QLatin1String("application/x-documentobject"));
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        if (!doc) doc = App::GetApplication().newDocument();
+    bool fromDoc = false;
+    bool keepExternal = false;
+    QString format;
+    if(mimeData->hasFormat(_MimeDocObj))
+        format = _MimeDocObj;
+    else if(mimeData->hasFormat(_MimeDocObjX)) {
+        format = _MimeDocObjX;
+        keepExternal = true;
+    }else if(mimeData->hasFormat(_MimeDocObjFile))
+        fromDoc = true;
+    else if(mimeData->hasFormat(_MimeDocObjXFile)) {
+        fromDoc = true;
+        keepExternal = true;
+    }else {
+        if (mimeData->hasUrls())
+            loadUrls(App::GetApplication().getActiveDocument(), mimeData->urls());
+        return;
+    }
+
+    App::Document* doc = App::GetApplication().getActiveDocument();
+    if(!doc) doc = App::GetApplication().newDocument();
+
+    if(keepExternal && !doc->isSaved()) {
+        int ret = QMessageBox::question(getMainWindow(),
+            tr("Object dependencies"),
+            tr("To link to external objects, the document must be saved at least once.\n"
+               "Do you want to save the document now?"),
+            QMessageBox::Yes,QMessageBox::No);
+        if(ret != QMessageBox::Yes || !Application::Instance->getDocument(doc)->saveAs())
+            return;
+    }
+    if(!fromDoc) {
+        QByteArray res = mimeData->data(format);
 
         doc->openTransaction("Paste");
         Base::ByteArrayIStreambuf buf(res);
@@ -1427,10 +1518,8 @@ void MainWindow::insertFromMimeData (const QMimeData * mimeData)
         }
         doc->commitTransaction();
     }
-    else if (mimeData->hasFormat(QLatin1String("application/x-documentobject-file"))) {
-        QByteArray res = mimeData->data(QLatin1String("application/x-documentobject-file"));
-        App::Document* doc = App::GetApplication().getActiveDocument();
-        if (!doc) doc = App::GetApplication().newDocument();
+    else {
+        QByteArray res = mimeData->data(format);
 
         doc->openTransaction("Paste");
         Base::FileInfo fi((const char*)res);
@@ -1445,10 +1534,6 @@ void MainWindow::insertFromMimeData (const QMimeData * mimeData)
                 gui->addRootObjectsToGroup(newObj, grp.front());
         }
         doc->commitTransaction();
-    }
-    else if (mimeData->hasUrls()) {
-        // load the files into the active document if there is one, otherwise let create one
-        loadUrls(App::GetApplication().getActiveDocument(), mimeData->urls());
     }
 }
 
@@ -1542,51 +1627,82 @@ void MainWindow::changeEvent(QEvent *e)
     }
 }
 
-void MainWindow::showMessage (const QString& message, int timeout)
-{
-    QFontMetrics fm(statusBar()->font());
-    QString msg = fm.elidedText(message, Qt::ElideMiddle, this->d->actionLabel->width());
-#if QT_VERSION <= 0x040600
-    this->statusBar()->showMessage(msg, timeout);
-#else
-    //#0000665: There is a crash under Ubuntu 12.04 (Qt 4.8.1)
-    QMetaObject::invokeMethod(statusBar(), "showMessage",
-        Qt::QueuedConnection,
-        QGenericReturnArgument(),
-        Q_ARG(QString,msg),
-        Q_ARG(int, timeout));
-#endif
+void MainWindow::clearStatus() {
+    d->currentStatusType = 100;
+    statusBar()->setStyleSheet(QString::fromLatin1("#statusBar{}"));
 }
 
-// -------------------------------------------------------------
+void MainWindow::statusMessageChanged() {
+    if(d->currentStatusType<0)
+        d->currentStatusType = -d->currentStatusType;
+    else {
+        // here probably means the status bar message is changed by QMainWindow
+        // internals, e.g. for displaying tooltip and stuff. Set reset what
+        // we've changed.
+        d->statusTimer->stop();
+        clearStatus();
+    }
+}
 
-namespace Gui {
+void MainWindow::showMessage(const QString& message, int timeout) {
+    if(QApplication::instance()->thread() != QThread::currentThread()) {
+        QApplication::postEvent(this, new CustomMessageEvent(CustomMessageEvent::Tmp,message,timeout));
+        return;
+    }
+    d->actionLabel->setText(message);
+    if(timeout) {
+        d->actionTimer->setSingleShot(true);
+        d->actionTimer->start(timeout);
+    }else
+        d->actionTimer->stop();
+}
 
-/**
- * The CustomMessageEvent class is used to send messages as events in the methods  
- * Error(), Warning() and Message() of the StatusBarObserver class to the main window 
- * to display them on the status bar instead of printing them directly to the status bar.
- *
- * This makes the usage of StatusBarObserver thread-safe.
- * @author Werner Mayer
- */
-class CustomMessageEvent : public QEvent
+void MainWindow::showStatus(int type, const QString& message)
 {
-public:
-    enum Type {Msg, Wrn, Err, Log};
-    CustomMessageEvent(Type t, const QString& s)
-      : QEvent(QEvent::User), _type(t), msg(s)
-    { }
-    ~CustomMessageEvent()
-    { }
-    Type type() const
-    { return _type; }
-    const QString& message() const
-    { return msg; }
-private:
-    Type _type;
-    QString msg;
-};
+    if(QApplication::instance()->thread() != QThread::currentThread()) {
+        QApplication::postEvent(this, 
+                new CustomMessageEvent((CustomMessageEvent::Type)type,message));
+        return;
+    }
+
+    if(d->currentStatusType < type)
+        return;
+
+    d->statusTimer->setSingleShot(true);
+    // TODO: hardcode?
+    int timeout = 5000;
+    d->statusTimer->start(timeout);
+
+    QFontMetrics fm(statusBar()->font());
+    QString msg = fm.elidedText(message, Qt::ElideMiddle, this->d->actionLabel->width());
+    switch(type) {
+    case CustomMessageEvent::Err:
+        statusBar()->setStyleSheet(d->status->err);
+        break;
+    case CustomMessageEvent::Wrn:
+        statusBar()->setStyleSheet(d->status->wrn);
+        break;
+    case CustomMessageEvent::Pane:
+        statusBar()->setStyleSheet(QString::fromLatin1("#statusBar{}"));
+        break;
+    default:
+        statusBar()->setStyleSheet(d->status->msg);
+        break;
+    }
+    d->currentStatusType = -type;
+    statusBar()->showMessage(msg, timeout);
+}
+
+
+// set text to the pane
+void MainWindow::setPaneText(int i, QString text)
+{
+    if (i==1) {
+        showStatus(CustomMessageEvent::Pane, text);
+    }
+    else if (i==2) {
+        d->sizeLabel->setText(text);
+    }
 }
 
 void MainWindow::customEvent(QEvent* e)
@@ -1594,7 +1710,8 @@ void MainWindow::customEvent(QEvent* e)
     if (e->type() == QEvent::User) {
         Gui::CustomMessageEvent* ce = static_cast<Gui::CustomMessageEvent*>(e);
         QString msg = ce->message();
-        if (ce->type() == CustomMessageEvent::Log) {
+        switch(ce->type()) {
+        case CustomMessageEvent::Log: {
             if (msg.startsWith(QLatin1String("#Inventor V2.1 ascii "))) {
                 Gui::Document *d = Application::Instance->activeDocument();
                 if (d) {
@@ -1608,11 +1725,12 @@ void MainWindow::customEvent(QEvent* e)
                     }
                 }
             }
-        }
-        else {
-            d->actionLabel->setText(msg);
-            d->actionTimer->setSingleShot(true);
-            d->actionTimer->start(5000);
+            break;
+        } case CustomMessageEvent::Tmp: {
+            showMessage(msg, ce->timeout());
+            break;
+        } default:
+            showStatus(ce->type(),msg);
         }
     }
     else if (e->type() == ActionStyleEvent::EventType) {
@@ -1635,9 +1753,9 @@ void MainWindow::customEvent(QEvent* e)
 StatusBarObserver::StatusBarObserver()
   : WindowParameter("OutputWindow")
 {
-    msg = QString::fromLatin1("#000000"); // black
-    wrn = QString::fromLatin1("#ffaa00"); // orange
-    err = QString::fromLatin1("#ff0000"); // red
+    msg = QString::fromLatin1("#statusBar{color: #000000}"); // black
+    wrn = QString::fromLatin1("#statusBar{color: #ffaa00}"); // orange
+    err = QString::fromLatin1("#statusBar{color: #ff0000}"); // red
     Base::Console().AttachObserver(this);
     getWindowParameter()->Attach(this);
     getWindowParameter()->NotifyAll();
@@ -1652,17 +1770,18 @@ StatusBarObserver::~StatusBarObserver()
 void StatusBarObserver::OnChange(Base::Subject<const char*> &rCaller, const char * sReason)
 {
     ParameterGrp& rclGrp = ((ParameterGrp&)rCaller);
+    auto format = QString::fromLatin1("#statusBar{color: %1}");
     if (strcmp(sReason, "colorText") == 0) {
         unsigned long col = rclGrp.GetUnsigned( sReason );
-        this->msg = QColor((col >> 24) & 0xff,(col >> 16) & 0xff,(col >> 8) & 0xff).name();
+        this->msg = format.arg(QColor((col >> 24) & 0xff,(col >> 16) & 0xff,(col >> 8) & 0xff).name());
     }
     else if (strcmp(sReason, "colorWarning") == 0) {
         unsigned long col = rclGrp.GetUnsigned( sReason );
-        this->wrn = QColor((col >> 24) & 0xff,(col >> 16) & 0xff,(col >> 8) & 0xff).name();
+        this->wrn = format.arg(QColor((col >> 24) & 0xff,(col >> 16) & 0xff,(col >> 8) & 0xff).name());
     }
     else if (strcmp(sReason, "colorError") == 0) {
         unsigned long col = rclGrp.GetUnsigned( sReason );
-        this->err = QColor((col >> 24) & 0xff,(col >> 16) & 0xff,(col >> 8) & 0xff).name();
+        this->err = format.arg(QColor((col >> 24) & 0xff,(col >> 16) & 0xff,(col >> 8) & 0xff).name());
     }
 }
 
@@ -1672,8 +1791,7 @@ void StatusBarObserver::OnChange(Base::Subject<const char*> &rCaller, const char
 void StatusBarObserver::Message(const char * m)
 {
     // Send the event to the main window to allow thread-safety. Qt will delete it when done.
-    QString txt = QString::fromLatin1("<font color=\"%1\">%2</font>").arg(this->msg).arg(QString::fromUtf8(m));
-    CustomMessageEvent* ev = new CustomMessageEvent(CustomMessageEvent::Msg, txt);
+    CustomMessageEvent* ev = new CustomMessageEvent(CustomMessageEvent::Msg, QString::fromUtf8(m));
     QApplication::postEvent(getMainWindow(), ev);
 }
 
@@ -1683,8 +1801,7 @@ void StatusBarObserver::Message(const char * m)
 void StatusBarObserver::Warning(const char *m)
 {
     // Send the event to the main window to allow thread-safety. Qt will delete it when done.
-    QString txt = QString::fromLatin1("<font color=\"%1\">%2</font>").arg(this->wrn).arg(QString::fromUtf8(m));
-    CustomMessageEvent* ev = new CustomMessageEvent(CustomMessageEvent::Wrn, txt);
+    CustomMessageEvent* ev = new CustomMessageEvent(CustomMessageEvent::Wrn, QString::fromUtf8(m));
     QApplication::postEvent(getMainWindow(), ev);
 }
 
@@ -1694,8 +1811,7 @@ void StatusBarObserver::Warning(const char *m)
 void StatusBarObserver::Error  (const char *m)
 {
     // Send the event to the main window to allow thread-safety. Qt will delete it when done.
-    QString txt = QString::fromLatin1("<font color=\"%1\">%2</font>").arg(this->err).arg(QString::fromUtf8(m));
-    CustomMessageEvent* ev = new CustomMessageEvent(CustomMessageEvent::Err, txt);
+    CustomMessageEvent* ev = new CustomMessageEvent(CustomMessageEvent::Err, QString::fromUtf8(m));
     QApplication::postEvent(getMainWindow(), ev);
 }
 

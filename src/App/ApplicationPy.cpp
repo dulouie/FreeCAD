@@ -35,6 +35,7 @@
 #include "Document.h"
 #include "DocumentPy.h"
 #include "DocumentObserverPython.h"
+#include "DocumentObjectPy.h"
 
 // FreeCAD Base header
 #include <Base/Interpreter.h>
@@ -139,7 +140,28 @@ PyMethodDef Application::Methods[] = {
      "'level' can either be string 'Log', 'Msg', 'Wrn', 'Error', or an integer value"},
     {"getLogLevel",          (PyCFunction) Application::sGetLogLevel, 1,
      "getLogLevel(tag) -- Get the log level of a string tag"},
-
+    {"checkLinkDepth",       (PyCFunction) Application::sCheckLinkDepth, 1,
+     "checkLinkDepth(depth) -- check link recursion depth"},
+    {"getLinksTo",       (PyCFunction) Application::sGetLinksTo, 1,
+     "getLinksTo(obj,recursive=True,maxCount=0) -- return the objects linked to 'obj'"},
+    {"getDependentObjects", (PyCFunction) Application::sGetDependentObjects, 1,
+     "getDependentObjects(obj|[obj,...], noExternal=False, sort=False)\n"
+     "Return a list of dependent objects including the given objects.\n\n"
+     "noExternal: If true, exclude externally linked objects from dependencies.\n"
+     "sort: If True, return the list in topological order."},
+    {"setActiveTransaction", (PyCFunction) Application::sSetActiveTransaction, 1,
+     "setActiveTransaction(name) -- setup active transaction with the given name\n\n"
+     "Returns the transaction ID for the active transaction. An application-wide\n"
+     "active transaction causing any document changes to open a transaction with\n"
+     "the given name and ID."},
+    {"getActiveTransaction", (PyCFunction) Application::sGetActiveTransaction, 1,
+     "getActiveTransaction() -> (name,id) return the current active transaction name and ID"},     
+    {"closeActiveTransaction", (PyCFunction) Application::sCloseActiveTransaction, 1,
+     "closeActiveTransaction(abort=False) -- commit or abort current active transaction"},     
+    {"autoTransaction", (PyCFunction) Application::sAutoTransaction, 1,
+     "autoTransaction() -> Bool -- Test if auto transaction is enabled"},
+    {"isRestoring", (PyCFunction) Application::sIsRestoring, 1,
+     "isRestoring() -> Bool -- Test if the application is opening some document"},
     {NULL, NULL, 0, NULL}		/* Sentinel */
 };
 
@@ -187,6 +209,12 @@ PyObject* Application::sLoadFile(PyObject * /*self*/, PyObject *args,PyObject * 
         PyErr_Format(PyExc_IOError, "Invalid project file %s: %s", path, e.what());
         return 0;
     }
+}
+
+PyObject* Application::sIsRestoring(PyObject * /*self*/, PyObject *args, PyObject *) {
+    if (!PyArg_ParseTuple(args, ""))
+        return NULL;
+    return Py::new_reference_to(Py::Boolean(GetApplication().isRestoring()));
 }
 
 PyObject* Application::sOpenDocument(PyObject * /*self*/, PyObject *args,PyObject * /*kwd*/)
@@ -741,4 +769,116 @@ PyObject *Application::sGetLogLevel(PyObject * /*self*/, PyObject *args, PyObjec
     } PY_CATCH;
 }
 
+PyObject *Application::sCheckLinkDepth(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
+{
+    short depth = 0;
+    if (!PyArg_ParseTuple(args, "h", &depth))
+        return NULL;
+
+    return Py::new_reference_to(Py::Int(GetApplication().checkLinkDepth(depth,false)));
+}
+
+PyObject *Application::sGetLinksTo(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
+{
+    PyObject *obj;
+    PyObject *recursive = Py_True;
+    short count = 0;
+    if (!PyArg_ParseTuple(args, "O!|Oh", &DocumentObjectPy::Type,&obj,&recursive, &count))
+        return NULL;
+
+    auto links = GetApplication().getLinksTo(
+        static_cast<DocumentObjectPy*>(obj)->getDocumentObjectPtr(),PyObject_IsTrue(recursive),count);
+    Py::Tuple ret(links.size());
+    int i=0;
+    for(auto o : links) 
+        ret.setItem(i++,Py::Object(o->getPyObject(),true));
+    return Py::new_reference_to(ret);
+}
+
+PyObject *Application::sGetDependentObjects(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
+{
+    PyObject *obj;
+    PyObject *noExternal = Py_False;
+    PyObject *sort = Py_False;
+    if (!PyArg_ParseTuple(args, "O|OO", &obj,&noExternal,&sort))
+        return 0;
+
+    std::vector<App::DocumentObject*> objs;
+    if(PySequence_Check(obj)) {
+        Py::Sequence seq(obj);
+        for(size_t i=0;i<seq.size();++i) {
+            if(!PyObject_TypeCheck(seq[i].ptr(),&DocumentObjectPy::Type)) {
+                PyErr_SetString(PyExc_TypeError, "Expect element in sequence to be of type document object");
+                return 0;
+            }
+            objs.push_back(static_cast<DocumentObjectPy*>(seq[i].ptr())->getDocumentObjectPtr());
+        }
+    }else if(!PyObject_TypeCheck(obj,&DocumentObjectPy::Type)) {
+        PyErr_SetString(PyExc_TypeError, 
+            "Expect first argument to be either a document object or sequence of document objects");
+        return 0;
+    }else
+        objs.push_back(static_cast<DocumentObjectPy*>(obj)->getDocumentObjectPtr());
+
+    auto ret = App::Document::getDependencyList(objs,PyObject_IsTrue(noExternal),PyObject_IsTrue(sort));
+
+    Py::Tuple tuple(ret.size());
+    for(size_t i=0;i<ret.size();++i) 
+        tuple.setItem(i,Py::Object(ret[i]->getPyObject(),true));
+    return Py::new_reference_to(tuple);
+}
+
+
+PyObject *Application::sSetActiveTransaction(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
+{
+    char *name;
+    if (!PyArg_ParseTuple(args, "s", &name))
+        return 0;
+    
+    PY_TRY {
+        Py::Int ret(GetApplication().setActiveTransaction(name));
+        return Py::new_reference_to(ret);
+    }PY_CATCH;
+}
+
+PyObject *Application::sGetActiveTransaction(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
+{
+    if (!PyArg_ParseTuple(args, ""))
+        return 0;
+    
+    PY_TRY {
+        int id = 0;
+        const char *name = GetApplication().getActiveTransaction(&id);
+        if(!name || id<=0)
+            Py_Return;
+        Py::Tuple ret(2);
+        ret.setItem(0,Py::String(name));
+        ret.setItem(1,Py::Int(id));
+        return Py::new_reference_to(ret);
+    }PY_CATCH;
+}
+
+PyObject *Application::sCloseActiveTransaction(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
+{
+    PyObject *abort = Py_False;
+    int id = 0;
+    if (!PyArg_ParseTuple(args, "|Oi", &abort,&id))
+        return 0;
+    
+    PY_TRY {
+        GetApplication().closeActiveTransaction(PyObject_IsTrue(abort),id);
+        Py_Return;
+    } PY_CATCH;
+}
+
+PyObject *Application::sAutoTransaction(PyObject * /*self*/, PyObject *args, PyObject * /*kwd*/)
+{
+    if (!PyArg_ParseTuple(args, ""))
+        return 0;
+    
+    PY_TRY {
+        return Py::new_reference_to(Py::Boolean(GetApplication().autoTransaction()));
+        Py_Return;
+    } PY_CATCH;
+}
 

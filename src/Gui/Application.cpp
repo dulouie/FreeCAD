@@ -118,6 +118,7 @@
 #include "ViewProviderMaterialObject.h"
 #include "ViewProviderTextDocument.h"
 #include "ViewProviderGroupExtension.h"
+#include "ViewProviderLink.h"
 
 #include "Language/Translator.h"
 #include "TaskView/TaskView.h"
@@ -141,6 +142,7 @@ struct ApplicationP
 {
     ApplicationP() : 
     activeDocument(0L), 
+    editDocument(0L),
     isClosing(false), 
     startingUp(true)
     {
@@ -157,6 +159,7 @@ struct ApplicationP
     std::map<const App::Document*, Gui::Document*> documents;
     /// Active document
     Gui::Document*   activeDocument;
+    Gui::Document*  editDocument;
     MacroManager*  macroMngr;
     /// List of all registered views
     std::list<Gui::BaseView*> passive;
@@ -299,6 +302,7 @@ Application::Application(bool GUIenabled)
         App::GetApplication().signalRenameDocument.connect(boost::bind(&Gui::Application::slotRenameDocument, this, _1));
         App::GetApplication().signalActiveDocument.connect(boost::bind(&Gui::Application::slotActiveDocument, this, _1));
         App::GetApplication().signalRelabelDocument.connect(boost::bind(&Gui::Application::slotRelabelDocument, this, _1));
+        App::GetApplication().signalShowHidden.connect(boost::bind(&Gui::Application::slotShowHidden, this, _1));
 
 
         // install the last active language
@@ -510,7 +514,14 @@ void Application::open(const char* FileName, const char* Module)
         Command::doCommand(Command::App, "import %s", Module);
         try {
             // load the file with the module
-            Command::doCommand(Command::App, "%s.open(u\"%s\")", Module, unicodepath.c_str());
+            Command::doCommand(Command::App, "__openingDoc=%s.open(u\"%s\")", Module, unicodepath.c_str());
+
+            // TODO: Because the document may contains xlink which opens other
+            // documents, we must make sure the requested document is the active
+            // document. But this is ugly. Any better idea?
+            Command::doCommand(Command::App, "Gui.setActiveDocument(__openingDoc)");
+            Command::doCommand(Command::App, "__openingDoc = None");
+
             // ViewFit
             if (!File.hasExtension("FCStd") && sendHasMsgToActiveView("ViewFit")) {
                 ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath
@@ -657,6 +668,7 @@ void Application::createStandardOperations()
     Gui::CreateWindowStdCommands();
     Gui::CreateStructureCommands();
     Gui::CreateTestCommands();
+    Gui::CreateLinkCommands();
 }
 
 void Application::slotNewDocument(const App::Document& Doc)
@@ -689,8 +701,10 @@ void Application::slotDeleteDocument(const App::Document& Doc)
         return;
     }
 
-    // We must clear the selection here to notify all observers
-    Gui::Selection().clearSelection(doc->second->getDocument()->getName());
+    // We must clear the selection here to notify all observers.
+    // And because of possible cross document link, better clear all selection
+    // to be safe
+    Gui::Selection().clearCompleteSelection();
     doc->second->signalDeleteDocument(*doc->second);
     signalDeleteDocument(*doc->second);
 
@@ -698,6 +712,8 @@ void Application::slotDeleteDocument(const App::Document& Doc)
     // view that becomes active sets the active document again. So, we needn't worry about this.
     if (d->activeDocument == doc->second)
         setActiveDocument(0);
+
+    doc->second->beforeDelete();
 
     // For exception-safety use a smart pointer
     unique_ptr<Document> delDoc (doc->second);
@@ -725,6 +741,16 @@ void Application::slotRenameDocument(const App::Document& Doc)
     signalRenameDocument(*doc->second);
 }
 
+void Application::slotShowHidden(const App::Document& Doc)
+{
+    std::map<const App::Document*, Gui::Document*>::iterator doc = d->documents.find(&Doc);
+#ifdef FC_DEBUG
+    assert(doc!=d->documents.end());
+#endif
+
+    signalShowHidden(*doc->second);
+}
+
 void Application::slotActiveDocument(const App::Document& Doc)
 {
     std::map<const App::Document*, Gui::Document*>::iterator doc = d->documents.find(&Doc);
@@ -745,6 +771,8 @@ void Application::slotActiveDocument(const App::Document& Doc)
             }
         }
         signalActiveDocument(*doc->second);
+
+        getMainWindow()->updateActions();
     }
 }
 
@@ -761,6 +789,7 @@ void Application::slotDeletedObject(const ViewProvider& vp)
 void Application::slotChangedObject(const ViewProvider& vp, const App::Property& prop)
 {
     this->signalChangedObject(vp,prop);
+    getMainWindow()->updateActions(true);
 }
 
 void Application::slotRelabelObject(const ViewProvider& vp)
@@ -771,6 +800,7 @@ void Application::slotRelabelObject(const ViewProvider& vp)
 void Application::slotActivatedObject(const ViewProvider& vp)
 {
     this->signalActivatedObject(vp);
+    getMainWindow()->updateActions();
 }
 
 void Application::onLastWindowClosed(Gui::Document* pcDoc)
@@ -807,6 +837,24 @@ bool Application::sendHasMsgToActiveView(const char* pMsg)
 Gui::Document* Application::activeDocument(void) const
 {
     return d->activeDocument;
+}
+
+Gui::Document* Application::editDocument(void) const
+{
+    return d->editDocument;
+}
+
+Gui::MDIView* Application::editViewOfNode(SoNode *node) const
+{
+    return d->editDocument?d->editDocument->getViewOfNode(node):0;
+}
+
+void Application::setEditDocument(Gui::Document *doc) {
+    if(!doc) 
+        d->editDocument = 0;
+    for(auto &v : d->documents)
+        v.second->_resetEdit();
+    d->editDocument = doc;
 }
 
 void Application::setActiveDocument(Gui::Document* pcDocument)
@@ -1561,6 +1609,10 @@ void Application::initTypes(void)
     Gui::ViewProviderMaterialObject             ::init();
     Gui::ViewProviderMaterialObjectPython       ::init();
     Gui::ViewProviderTextDocument               ::init();
+    Gui::ViewProviderLinkObserver               ::init();
+    Gui::LinkView                               ::init();
+    Gui::ViewProviderLink                       ::init();
+    Gui::ViewProviderLinkPython                 ::init();
 
     // Workbench
     Gui::Workbench                              ::init();

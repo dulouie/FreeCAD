@@ -784,49 +784,11 @@ StdCmdToggleVisibility::StdCmdToggleVisibility()
     eType         = Alter3DView;
 }
 
+
 void StdCmdToggleVisibility::activated(int iMsg)
 {
     Q_UNUSED(iMsg); 
-    // go through all documents
-    const std::vector<App::Document*> docs = App::GetApplication().getDocuments();
-    for (std::vector<App::Document*>::const_iterator it = docs.begin(); it != docs.end(); ++it) {
-        Document *pcDoc = Application::Instance->getDocument(*it);
-        std::vector<App::DocumentObject*> sel = Selection().getObjectsOfType
-            (App::DocumentObject::getClassTypeId(), (*it)->getName());
-
-        // in case a group object and an object of the group is selected then ignore the group object
-        std::vector<App::DocumentObject*> ignore;
-        for (std::vector<App::DocumentObject*>::iterator ft=sel.begin();ft!=sel.end();++ft) {
-            if ((*ft)->getTypeId().isDerivedFrom(App::DocumentObjectGroup::getClassTypeId())) {
-                App::DocumentObjectGroup* grp = static_cast<App::DocumentObjectGroup*>(*ft);
-                std::vector<App::DocumentObject*> sub = grp->Group.getValues();
-                for (std::vector<App::DocumentObject*>::iterator st = sub.begin(); st != sub.end(); ++st) {
-                    if (std::find(sel.begin(), sel.end(), *st) != sel.end()) {
-                        ignore.push_back(*ft);
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (!ignore.empty()) {
-            std::sort(sel.begin(), sel.end());
-            std::sort(ignore.begin(), ignore.end());
-            std::vector<App::DocumentObject*> diff;
-            std::back_insert_iterator<std::vector<App::DocumentObject*> > biit(diff);
-            std::set_difference(sel.begin(), sel.end(), ignore.begin(), ignore.end(), biit);
-            sel = diff;
-        }
-
-        for (std::vector<App::DocumentObject*>::const_iterator ft=sel.begin();ft!=sel.end();++ft) {
-            if (pcDoc && pcDoc->isShow((*ft)->getNameInDocument()))
-                doCommand(Gui,"Gui.getDocument(\"%s\").getObject(\"%s\").Visibility=False"
-                             , (*it)->getName(), (*ft)->getNameInDocument());
-            else
-                doCommand(Gui,"Gui.getDocument(\"%s\").getObject(\"%s\").Visibility=True"
-                             , (*it)->getName(), (*ft)->getNameInDocument());
-        }
-    }
+    doCommand(Gui,"Gui.Selection.setVisible()");
 }
 
 bool StdCmdToggleVisibility::isActive(void)
@@ -900,16 +862,7 @@ StdCmdShowSelection::StdCmdShowSelection()
 void StdCmdShowSelection::activated(int iMsg)
 {
     Q_UNUSED(iMsg); 
-    // go through all documents
-    const std::vector<App::Document*> docs = App::GetApplication().getDocuments();
-    for (std::vector<App::Document*>::const_iterator it = docs.begin(); it != docs.end(); ++it) {
-        const std::vector<App::DocumentObject*> sel = Selection().getObjectsOfType
-            (App::DocumentObject::getClassTypeId(), (*it)->getName());
-        for(std::vector<App::DocumentObject*>::const_iterator ft=sel.begin();ft!=sel.end();++ft) {
-            doCommand(Gui,"Gui.getDocument(\"%s\").getObject(\"%s\").Visibility=True"
-                         , (*it)->getName(), (*ft)->getNameInDocument());
-        }
-    }
+    doCommand(Gui,"Gui.Selection.setVisible(True)");
 }
 
 bool StdCmdShowSelection::isActive(void)
@@ -936,16 +889,7 @@ StdCmdHideSelection::StdCmdHideSelection()
 void StdCmdHideSelection::activated(int iMsg)
 {
     Q_UNUSED(iMsg); 
-    // go through all documents
-    const std::vector<App::Document*> docs = App::GetApplication().getDocuments();
-    for (std::vector<App::Document*>::const_iterator it = docs.begin(); it != docs.end(); ++it) {
-        const std::vector<App::DocumentObject*> sel = Selection().getObjectsOfType
-            (App::DocumentObject::getClassTypeId(), (*it)->getName());
-        for(std::vector<App::DocumentObject*>::const_iterator ft=sel.begin();ft!=sel.end();++ft) {
-            doCommand(Gui,"Gui.getDocument(\"%s\").getObject(\"%s\").Visibility=False"
-                         , (*it)->getName(), (*ft)->getNameInDocument());
-        }
-    }
+    doCommand(Gui,"Gui.Selection.setVisible(False)");
 }
 
 bool StdCmdHideSelection::isActive(void)
@@ -2581,6 +2525,52 @@ void StdCmdTreeSelection::activated(int iMsg)
 }
 
 //===========================================================================
+// Std_TreeSelectAllInstance
+//===========================================================================
+
+DEF_STD_CMD_A(StdCmdTreeSelectAllInstances)
+
+StdCmdTreeSelectAllInstances::StdCmdTreeSelectAllInstances()
+  : Command("Std_TreeSelectAllInstances")
+{
+    sGroup        = QT_TR_NOOP("View");
+    sMenuText     = QT_TR_NOOP("Select all instances");
+    sToolTipText  = QT_TR_NOOP("Select all instances of the current selected object");
+    sWhatsThis    = "Std_TreeSelectAllInstances";
+    sStatusTip    = QT_TR_NOOP("Select all instances of the current selected object");
+    eType         = Alter3DView|AlterSelection;
+}
+
+bool StdCmdTreeSelectAllInstances::isActive(void)
+{
+    const auto &sels = Selection().getSelectionEx("*",App::DocumentObject::getClassTypeId(),true,true);
+    if(sels.empty())
+        return false;
+    auto obj = sels[0].getObject();
+    if(!obj || !obj->getNameInDocument())
+        return false;
+    return dynamic_cast<ViewProviderDocumentObject*>(
+            Application::Instance->getViewProvider(obj))!=0;
+}
+
+void StdCmdTreeSelectAllInstances::activated(int iMsg)
+{
+    Q_UNUSED(iMsg); 
+    const auto &sels = Selection().getSelectionEx("*",App::DocumentObject::getClassTypeId(),true,true);
+    if(sels.empty())
+        return;
+    auto obj = sels[0].getObject();
+    if(!obj || !obj->getNameInDocument())
+        return;
+    auto vpd = dynamic_cast<ViewProviderDocumentObject*>(
+            Application::Instance->getViewProvider(obj));
+    if(!vpd) 
+        return;
+    for(auto tree : getMainWindow()->findChildren<TreeWidget*>())
+        tree->selectAllInstances(*vpd);
+}
+
+//===========================================================================
 // Std_MeasureDistance
 //===========================================================================
 
@@ -2875,6 +2865,7 @@ void CreateViewStdCommands(void)
     rcCmdMgr.addCommand(new StdViewBoxZoom());
     rcCmdMgr.addCommand(new StdBoxSelection());
     rcCmdMgr.addCommand(new StdCmdTreeSelection());
+    rcCmdMgr.addCommand(new StdCmdTreeSelectAllInstances());
     rcCmdMgr.addCommand(new StdCmdMeasureDistance());
     rcCmdMgr.addCommand(new StdCmdSceneInspector());
     rcCmdMgr.addCommand(new StdCmdTextureMapping());

@@ -58,6 +58,7 @@
 #include "BitmapFactory.h"
 #include "Document.h"
 #include "WidgetFactory.h"
+#include "View3DInventorViewer.h"
 #include <App/DocumentObjectPy.h>
 #include <App/GeoFeature.h>
 #include <App/PropertyGeo.h>
@@ -65,21 +66,34 @@
 #include <Base/Reader.h>
 #include <Base/Interpreter.h>
 
+FC_LOG_LEVEL_INIT("ViewProviderPythonFeature",true,true);
+
 
 using namespace Gui;
 
 namespace Gui {
 
+struct ProxyInfo {
+    Py::Object viewObject;
+    Py::Object proxy;
+
+    ~ProxyInfo() {
+        Base::PyGILStateLocker lock;
+        viewObject = Py::Object();
+        proxy = Py::Object();
+    }
+};
+
 class PropertyEvent : public QEvent
 {
 public:
-    PropertyEvent(const Gui::ViewProvider* vp, App::Property* p)
-        : QEvent(QEvent::Type(QEvent::User)), view(vp), prop(p)
+    PropertyEvent(const Gui::ViewProviderDocumentObject* vp, const ProxyInfo &info)
+        : QEvent(QEvent::Type(QEvent::User)), view(vp), info(info)
     {
     }
 
-    const Gui::ViewProvider* view;
-    App::Property* prop;
+    const Gui::ViewProviderDocumentObject* view;
+    ProxyInfo info;
 };
 
 class ViewProviderPythonFeatureObserver : public QObject
@@ -101,12 +115,56 @@ private:
         // Make sure that the object hasn't been deleted in the meantime (#0001522)
         if (it != viewMap.end()) {
             viewMap.erase(it);
-            App::Property* prop = pe->view->getPropertyByName("Proxy");
-            if (prop && prop->isDerivedFrom(App::PropertyPythonObject::getClassTypeId())) {
-                prop->Paste(*pe->prop);
+
+            // We check below the python object of the view provider to make
+            // sure that the view provider is actually the owner of the proxy
+            // object we cached before. This step is necessary to prevent a
+            // very obscure bug described here.
+            //
+            // The proxy caching is only effective when an object is deleted in
+            // an event of undo, and we restore the proxy in the event of redo.
+            // The object is not really freed while inside undo/redo stack. It
+            // gets really deleted from memory when either the user clears the
+            // undo/redo stack manually, or the redo stack gets automatically
+            // cleared when new transaction is created. FC has no explicit
+            // signaling of when the object is really deleted from the memory.
+            // This ViewProviderPythonFeatureObserver uses a heuristic to
+            // decide when to flush the cache in slotAppendObject(), that is,
+            // it sees any cache miss event as the signaling of an redo clear.
+            // The bug happens in the very rare event, when the redo stack is
+            // cleared when new transaction is added, and the freed object's
+            // memory gets immediately reused by c++ allocator for the new
+            // object created in the new transaction.  This creates a cache
+            // false hit event, where the old deleted view provider's proxy
+            // gets mistakenly assigned to the newly created object, which
+            // happens to have the exact same memory location. This situation
+            // is very rare and really depends on the system's allocator
+            // implementation.  However, tests show that it happens regularly
+            // in Linux debug build. To prevent this, we use the trick of
+            // checking the python object pointer of the view provider to make
+            // sure the view provider are in fact the same. We hold the python
+            // object reference count, so it never gets freed and reused like
+            // its owner view provider.
+            //
+            // Side note: the original implementation uses property copy and
+            // paste to store the proxy object, which is fine, but has the
+            // trouble of having to manually freed the copied property. And the
+            // original implementation didn't do that in every case, causing
+            // memory leak. We now simply stores the python object with
+            // reference counting, so no need to worry about deleting
+            
+            Py::Object viewObject(const_cast<ViewProviderDocumentObject*>(pe->view)->getPyObject(),true);
+            if(viewObject.ptr() != pe->info.viewObject.ptr()) {
+                if(FC_LOG_INSTANCE.isEnabled(FC_LOGLEVEL_LOG))
+                    FC_WARN("invalid proxy cache " << viewObject.ptr() << ", " <<
+                            pe->info.viewObject.ptr() << ", " << pe->info.proxy.ptr());
+            }else{
+                App::Property* prop = pe->view->getPropertyByName("Proxy");
+                if (prop && prop->isDerivedFrom(App::PropertyPythonObject::getClassTypeId())) {
+                    prop->setPyObject(pe->info.proxy.ptr());
+                }
             }
         }
-        delete pe->prop;
     }
     static ViewProviderPythonFeatureObserver* _singleton;
 
@@ -114,7 +172,7 @@ private:
     ~ViewProviderPythonFeatureObserver();
     typedef std::map<
                 const App::DocumentObject*,
-                App::Property*
+                ProxyInfo
             > ObjectProxy;
 
     std::map<const App::Document*, ObjectProxy> proxyMap;
@@ -143,6 +201,7 @@ void ViewProviderPythonFeatureObserver::slotDeleteDocument(const Gui::Document& 
     App::Document* doc = d.getDocument();
     std::map<const App::Document*, ObjectProxy>::iterator it = proxyMap.find(doc);
     if (it != proxyMap.end()) {
+        Base::PyGILStateLocker lock;
         proxyMap.erase(it);
     }
 }
@@ -197,7 +256,10 @@ void ViewProviderPythonFeatureObserver::slotDeleteObject(const Gui::ViewProvider
     try {
         App::Property* prop = vp.getPropertyByName("Proxy");
         if (prop && prop->isDerivedFrom(App::PropertyPythonObject::getClassTypeId())) {
-            proxyMap[doc][docobj] = prop->Copy();
+            auto &info = proxyMap[doc][docobj];
+            info.viewObject = Py::asObject(const_cast<ViewProviderDocumentObject&>(vp).getPyObject());
+            info.proxy = Py::asObject(prop->getPyObject());
+            FC_LOG("proxy cache " << info.viewObject.ptr() << ", " << info.proxy.ptr());
         }
     }
     catch (Py::Exception& e) {
@@ -245,8 +307,18 @@ QIcon ViewProviderPythonFeatureImp::getIcon() const
             if (vp.hasAttr(std::string("getIcon"))) {
                 Py::Callable method(vp.getAttr(std::string("getIcon")));
                 Py::Tuple args;
-                Py::String str(method.apply(args));
-                std::string content = str.as_std_string("utf-8");
+                Py::Object ret(method.apply(args));
+                if(ret.isNone())
+                    return QIcon();
+
+                PythonWrapper wrap;
+                wrap.loadGuiModule();
+                wrap.loadWidgetsModule();
+                QIcon *picon = wrap.toQIcon(ret.ptr());
+                if(picon) 
+                    return *picon;
+
+                std::string content = Py::String(ret).as_std_string("utf-8");
                 QPixmap icon;
                 // Check if the passed string is a filename, otherwise treat as xpm data
                 QFileInfo fi(QString::fromUtf8(content.c_str()));
@@ -375,6 +447,37 @@ std::string ViewProviderPythonFeatureImp::getElement(const SoDetail *det) const
     return "";
 }
 
+ViewProviderPythonFeatureImp::ValueT
+ViewProviderPythonFeatureImp::getElementPicked(const SoPickedPoint *pp, std::string &subname) const
+{
+    Base::PyGILStateLocker lock;
+    try {
+        App::Property* proxy = object->getPropertyByName("Proxy");
+        if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
+            Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
+            if (vp.hasAttr(std::string("getElementPicked"))) {
+                PyObject* pivy = 0;
+                pivy = Base::Interpreter().createSWIGPointerObj("pivy.coin", "SoPickedPoint *", (void*)pp, 0);
+                Py::Callable method(vp.getAttr(std::string("getElementPicked")));
+                Py::Tuple args(1);
+                args.setItem(0, Py::Object(pivy, true));
+                Py::Object ret(method.apply(args));
+                if(!ret.isString()) return Rejected;
+                subname = ret.as_string();
+                return Accepted;
+            }
+        }
+    }
+    catch (const Base::Exception& e) {
+        e.ReportException();
+    }
+    catch (Py::Exception&) {
+        Base::PyException e; // extract the Python error text
+        e.ReportException();
+    }
+
+    return NotImplemented;
+}
 SoDetail* ViewProviderPythonFeatureImp::getDetail(const char* name) const
 {
     // Run the onChanged method of the proxy object.
@@ -405,6 +508,46 @@ SoDetail* ViewProviderPythonFeatureImp::getDetail(const char* name) const
 
     return 0;
 }
+
+ViewProviderPythonFeatureImp::ValueT ViewProviderPythonFeatureImp::getDetailPath(
+        const char* name, SoFullPath *path, bool append, SoDetail *&det) const
+{
+    Base::PyGILStateLocker lock;
+    auto length = path->getLength();
+    try {
+        App::Property* proxy = object->getPropertyByName("Proxy");
+        if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
+            Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
+            if (vp.hasAttr(std::string("getDetailPath"))) {
+                Py::Callable method(vp.getAttr(std::string("getDetailPath")));
+                PyObject* pivy = 0;
+                pivy = Base::Interpreter().createSWIGPointerObj("pivy.coin", "SoFullPath *", (void*)path, 1);
+                path->ref();
+                Py::Tuple args(3);
+                args.setItem(0, Py::String(name));
+                args.setItem(1, Py::Object(pivy, true));
+                args.setItem(2, Py::Boolean(append));
+                Py::Object pyDet(method.apply(args));
+                void* ptr = 0;
+                Base::Interpreter().convertSWIGPointerObj("pivy.coin", "SoDetail *", pyDet.ptr(), &ptr, 0);
+                SoDetail* detail = reinterpret_cast<SoDetail*>(ptr);
+                det = detail ? detail->copy() : 0;
+                return Accepted;
+            }
+        }
+        return NotImplemented;
+    }
+    catch (const Base::Exception& e) {
+        e.ReportException();
+    }
+    catch (Py::Exception&) {
+        Base::PyException e; // extract the Python error text
+        e.ReportException();
+    }
+    path->truncate(length);
+    return Rejected;
+}
+
 
 std::vector<Base::Vector3d> ViewProviderPythonFeatureImp::getSelectionShape(const char* /*Element*/) const
 {
@@ -485,6 +628,78 @@ ViewProviderPythonFeatureImp::unsetEdit(int ModNum)
     }
 
     return NotImplemented;
+}
+
+bool ViewProviderPythonFeatureImp::setEditViewer(View3DInventorViewer *viewer, int ModNum)
+{
+    // Run the onChanged method of the proxy object.
+    Base::PyGILStateLocker lock;
+    try {
+        App::Property* proxy = object->getPropertyByName("Proxy");
+        if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
+            Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
+            const char *fname = "setEditViewer";
+            if (vp.hasAttr(fname)) {
+                if (vp.hasAttr("__object__")) {
+                    Py::Callable method(vp.getAttr(fname));
+                    Py::Tuple args(2);
+                    args.setItem(0, Py::Object(viewer->getPyObject(),true));
+                    args.setItem(1, Py::Int(ModNum));
+                    Py::Object ret(method.apply(args));
+                    return ret.isTrue();
+                }
+                else {
+                    Py::Callable method(vp.getAttr(fname));
+                    Py::Tuple args(3);
+                    args.setItem(0, Py::Object(object->getPyObject(),true));
+                    args.setItem(1, Py::Object(viewer->getPyObject(),true));
+                    args.setItem(2, Py::Int(ModNum));
+                    Py::Object ret(method.apply(args));
+                    return ret.isTrue();
+                }
+            }
+        }
+    }
+    catch (Py::Exception&) {
+        Base::PyException e; // extract the Python error text
+        e.ReportException();
+    }
+    return false;
+}
+
+bool ViewProviderPythonFeatureImp::unsetEditViewer(View3DInventorViewer *viewer)
+{
+    // Run the onChanged method of the proxy object.
+    Base::PyGILStateLocker lock;
+    try {
+        App::Property* proxy = object->getPropertyByName("Proxy");
+        if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
+            Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
+            const char *fname = "unsetEditViewer";
+            if (vp.hasAttr(fname)) {
+                if (vp.hasAttr("__object__")) {
+                    Py::Callable method(vp.getAttr(fname));
+                    Py::Tuple args(1);
+                    args.setItem(0, Py::Object(viewer->getPyObject(),true));
+                    Py::Object ret(method.apply(args));
+                    return ret.isTrue();
+                }
+                else {
+                    Py::Callable method(vp.getAttr(fname));
+                    Py::Tuple args(2);
+                    args.setItem(0, Py::Object(object->getPyObject(),true));
+                    args.setItem(1, Py::Object(viewer->getPyObject(),true));
+                    Py::Object ret(method.apply(args));
+                    return ret.isTrue();
+                }
+            }
+        }
+    }
+    catch (Py::Exception&) {
+        Base::PyException e; // extract the Python error text
+        e.ReportException();
+    }
+    return false;
 }
 
 ViewProviderPythonFeatureImp::ValueT
@@ -670,12 +885,17 @@ void ViewProviderPythonFeatureImp::startRestoring()
 
 void ViewProviderPythonFeatureImp::finishRestoring()
 {
+    Base::PyGILStateLocker lock;
     App::Property* proxy = object->getPropertyByName("Proxy");
     if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
         Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
         if (vp.ptr() == Py::_None()) {
             object->show();
             static_cast<App::PropertyPythonObject*>(proxy)->setValue(Py::Int(1));
+        }else if (vp.hasAttr(std::string("onFinishRestoring"))) {
+            Py::Callable method(vp.getAttr(std::string("onFinishRestoring")));
+            Py::Tuple args;
+            method.apply(args);
         }
     }
 }
@@ -1000,9 +1220,106 @@ ViewProviderPythonFeatureImp::dropObject(App::DocumentObject* obj)
     catch (Py::Exception&) {
         Base::PyException e; // extract the Python error text
         e.ReportException();
+        throw e;
     }
 
     return Rejected;
+}
+
+ViewProviderPythonFeatureImp::ValueT
+ViewProviderPythonFeatureImp::canDragAndDropObject(App::DocumentObject *obj) const
+{
+    Base::PyGILStateLocker lock;
+    try {
+        App::Property* proxy = object->getPropertyByName("Proxy");
+        if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
+            Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
+            if (vp.hasAttr(std::string("canDragAndDropObject"))) {
+                Py::Callable method(vp.getAttr(std::string("canDragAndDropObject")));
+                Py::TupleN args(Py::Object(obj->getPyObject(),true));
+                Py::Boolean ok(method.apply(args));
+                return static_cast<bool>(ok) ? Accepted : Rejected;
+            }
+        }
+        return NotImplemented;
+    }
+    catch (Py::Exception&) {
+        Base::PyException e; // extract the Python error text
+        e.ReportException();
+    }
+
+    return Rejected;
+}
+
+ViewProviderPythonFeatureImp::ValueT
+ViewProviderPythonFeatureImp::canDropObjectEx(App::DocumentObject* obj,
+        App::DocumentObject *owner, const char *subname) const
+{
+    Base::PyGILStateLocker lock;
+    try {
+        App::Property* proxy = object->getPropertyByName("Proxy");
+        if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
+            Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
+            if (vp.hasAttr(std::string("canDropObjectEx"))) {
+                Py::Callable method(vp.getAttr(std::string("canDropObjectEx")));
+                Py::Tuple args(3);
+                args.setItem(0, Py::Object(obj->getPyObject(), true));
+                args.setItem(1, owner?Py::Object(owner->getPyObject(), true):Py::None());
+                args.setItem(2, Py::String(subname?subname:""));
+                Py::Boolean ok(method.apply(args));
+                return static_cast<bool>(ok) ? Accepted : Rejected;
+            }
+            else {
+                return NotImplemented;
+            }
+        }
+    }
+    catch (Py::Exception&) {
+        Base::PyException e; // extract the Python error text
+        e.ReportException();
+    }
+
+    return Rejected;
+}
+
+ViewProviderPythonFeatureImp::ValueT
+ViewProviderPythonFeatureImp::dropObjectEx(
+        App::DocumentObject* obj, App::DocumentObject *owner, const char *element)
+{
+    Base::PyGILStateLocker lock;
+    try {
+        App::Property* proxy = object->getPropertyByName("Proxy");
+        if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
+            Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
+            if (vp.hasAttr(std::string("dropObjectEx"))) {
+                if (vp.hasAttr("__object__")) {
+                    Py::Callable method(vp.getAttr(std::string("dropObjectEx")));
+                    Py::TupleN args(
+                            Py::Object(obj->getPyObject(),true),
+                            owner?Py::Object(owner->getPyObject(),true):Py::Object(),
+                            Py::String(element?element:""));
+                    method.apply(args);
+                    return Accepted;
+                }
+                else {
+                    Py::Callable method(vp.getAttr(std::string("dropObjectEx")));
+                    Py::TupleN args(
+                            Py::Object(object->getPyObject(),true),
+                            Py::Object(obj->getPyObject(),true),
+                            owner?Py::Object(owner->getPyObject(),true):Py::Object(),
+                            Py::String(element?element:""));
+                    method.apply(args);
+                    return Accepted;
+                }
+            }
+        }
+        return NotImplemented;
+    }
+    catch (Py::Exception&) {
+        Base::PyException e; // extract the Python error text
+        e.ReportException();
+        throw e;
+    }
 }
 
 bool ViewProviderPythonFeatureImp::isShow() const
@@ -1029,6 +1346,29 @@ bool ViewProviderPythonFeatureImp::isShow() const
     return false;
 }
 
+
+ViewProviderPythonFeatureImp::ValueT 
+ViewProviderPythonFeatureImp::canRemoveChildrenFromRoot() const {
+    Base::PyGILStateLocker lock;
+    try {
+        App::Property* proxy = object->getPropertyByName("Proxy");
+        if (proxy && proxy->getTypeId() == App::PropertyPythonObject::getClassTypeId()) {
+            Py::Object vp = static_cast<App::PropertyPythonObject*>(proxy)->getValue();
+            if (vp.hasAttr(std::string("canRemoveChildrenFromRoot"))) {
+                Py::Callable method(vp.getAttr(std::string("canRemoveChildrenFromRoot")));
+                Py::Tuple args;
+                Py::Boolean ok(method.apply(args));
+                return static_cast<bool>(ok) ? Accepted : Rejected;
+            }
+        }
+        return NotImplemented;
+    }
+    catch (Py::Exception&) {
+        Base::PyException e; // extract the Python error text
+        e.ReportException();
+    }
+    return Rejected;
+}
 
 // ---------------------------------------------------------
 

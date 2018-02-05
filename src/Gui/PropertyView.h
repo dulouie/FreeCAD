@@ -64,6 +64,7 @@ public:
 
     Gui::PropertyEditor::PropertyEditor* propertyEditorView;
     Gui::PropertyEditor::PropertyEditor* propertyEditorData;
+    void clearPropertyItemSelection();
 
 public Q_SLOTS:
     /// Stores a preference for the last tab selected
@@ -71,6 +72,8 @@ public Q_SLOTS:
 
 protected:
     void changeEvent(QEvent *e);
+    void showEvent(QShowEvent *) override;
+    void hideEvent(QHideEvent *) override;
 
 private:
     void onSelectionChanged(const SelectionChanges& msg);
@@ -79,6 +82,7 @@ private:
     void slotAppendDynamicProperty(const App::Property&);
     void slotRemoveDynamicProperty(const App::Property&);
     void slotChangePropertyEditor(const App::Property&);
+    void slotRollback();
 
 private:
     struct PropInfo;
@@ -89,6 +93,8 @@ private:
     Connection connectPropAppend;
     Connection connectPropRemove;
     Connection connectPropChange;
+    Connection connectUndoDocument;
+    Connection connectRedoDocument;
     QTabWidget* tabs;
 };
 

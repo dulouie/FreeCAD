@@ -52,11 +52,15 @@ public:
     QIcon getIcon() const;
     std::vector<App::DocumentObject*> claimChildren(const std::vector<App::DocumentObject*>&) const;
     bool useNewSelectionModel() const;
+    ValueT getElementPicked(const SoPickedPoint *pp, std::string &subname) const;
     std::string getElement(const SoDetail *det) const;
     SoDetail* getDetail(const char*) const;
+    ValueT getDetailPath(const char *name, SoFullPath *path, bool append, SoDetail *&det) const;
     std::vector<Base::Vector3d> getSelectionShape(const char* Element) const;
     ValueT setEdit(int ModNum);
     ValueT unsetEdit(int ModNum);
+    bool setEditViewer(View3DInventorViewer*, int ModNum);
+    bool unsetEditViewer(View3DInventorViewer*);
     ValueT doubleClicked(void);
     void setupContextMenu(QMenu* menu);
 
@@ -82,6 +86,8 @@ public:
     std::string setDisplayMode(const char* ModeName);
     //@}
 
+    ValueT canRemoveChildrenFromRoot() const;
+
     /** @name Drag and drop */
     //@{
     /// Returns true if the view provider generally supports dragging objects
@@ -96,6 +102,12 @@ public:
     ValueT canDropObject(App::DocumentObject*) const;
     /// If the dropped object type is accepted the object will be added as child
     ValueT dropObject(App::DocumentObject*);
+    /** Return false to force drop only operation for a give object*/
+    ValueT canDragAndDropObject(App::DocumentObject*) const;
+    /** Query object dropping with full quanlified name */
+    ValueT canDropObjectEx(App::DocumentObject *obj, App::DocumentObject *, const char *) const;
+    /** Add an object with full quanlified name to the view provider by drag and drop */
+    ValueT dropObjectEx(App::DocumentObject *obj, App::DocumentObject *, const char *);
     //@}
 
 private:
@@ -151,6 +163,14 @@ public:
     virtual bool useNewSelectionModel() const {
         return imp->useNewSelectionModel();
     }
+    virtual bool getElementPicked(const SoPickedPoint *pp, std::string &subname) const {
+        auto ret = imp->getElementPicked(pp,subname);
+        if(ret == ViewProviderPythonFeatureImp::NotImplemented)
+            return ViewProviderT::getElementPicked(pp,subname);
+        else if(ret == ViewProviderPythonFeatureImp::Accepted)
+            return true;
+        return false;
+    }
     virtual std::string getElement(const SoDetail *det) const {
         std::string name = imp->getElement(det);
         if (!name.empty()) return name;
@@ -160,6 +180,12 @@ public:
         SoDetail* det = imp->getDetail(name);
         if (det) return det;
         return ViewProviderT::getDetail(name);
+    }
+    virtual SoDetail* getDetailPath(const char *name, SoFullPath *path, bool append) const {
+        SoDetail *det = 0;
+        if(imp->getDetailPath(name,path,append,det) != ViewProviderPythonFeatureImp::NotImplemented)
+            return det;
+        return ViewProviderT::getDetailPath(name,path,append);
     }
     virtual std::vector<Base::Vector3d> getSelectionShape(const char* Element) const {
         return ViewProviderT::getSelectionShape(Element);
@@ -190,10 +216,12 @@ public:
     /** @name Restoring view provider from document load */
     //@{
     virtual void startRestoring() {
+        ViewProviderT::startRestoring();
         imp->startRestoring();
     }
     virtual void finishRestoring() {
         imp->finishRestoring();
+        ViewProviderT::finishRestoring();
     }
     //@}
 
@@ -263,6 +291,39 @@ public:
             return ViewProviderT::dropObject(obj);
         }
     }
+    /** Return false to force drop only operation for a give object*/
+    virtual bool canDragAndDropObject(App::DocumentObject *obj) const override {
+        switch (imp->canDragAndDropObject(obj)) {
+        case ViewProviderPythonFeatureImp::Accepted:
+            return true;
+        case ViewProviderPythonFeatureImp::Rejected:
+            return false;
+        default:
+            return ViewProviderT::canDragAndDropObject(obj);
+        }
+    }
+    virtual bool canDropObjectEx(
+            App::DocumentObject *obj, App::DocumentObject *owner, const char *subname) const override
+    {
+        switch (imp->canDropObjectEx(obj,owner,subname)) {
+        case ViewProviderPythonFeatureImp::Accepted:
+            return true;
+        case ViewProviderPythonFeatureImp::Rejected:
+            return false;
+        default:
+            return ViewProviderT::canDropObjectEx(obj,owner,subname);
+        }
+    }
+    /** Add an object with full quanlified name to the view provider by drag and drop */
+    virtual void dropObjectEx(App::DocumentObject *obj, App::DocumentObject *owner, const char *element) {
+        switch (imp->dropObjectEx(obj,owner,element)) {
+        case ViewProviderPythonFeatureImp::NotImplemented:
+            ViewProviderT::dropObjectEx(obj,owner,element);
+            break;
+        default:
+            break;
+        }
+    }
     //@}
 
     /** @name Display methods */
@@ -292,6 +353,17 @@ public:
     }
     //@}
 
+    virtual bool canRemoveChildrenFromRoot() const override {
+        switch(imp->canRemoveChildrenFromRoot()) {
+        case ViewProviderPythonFeatureImp::NotImplemented:
+            return ViewProviderT::canRemoveChildrenFromRoot();
+        case ViewProviderPythonFeatureImp::Accepted:
+            return true;
+        default:
+            return false;
+        }
+    }
+
     /** @name Access properties */
     //@{
     App::Property* addDynamicProperty(
@@ -312,6 +384,10 @@ public:
     }
     virtual void addDynamicProperties(const App::PropertyContainer* cont) {
         return props->addDynamicProperties(cont);
+    }
+    /// get all properties of the class (including properties of the parent)
+    virtual void getPropertyList(std::vector<App::Property*> &List) const {
+        props->getPropertyList(List);
     }
     /// get all properties of the class (including parent)
     virtual void getPropertyMap(std::map<std::string,App::Property*> &Map) const {
@@ -411,6 +487,14 @@ protected:
         default:
             return ViewProviderT::unsetEdit(ModNum);
         }
+    }
+    virtual void setEditViewer(View3DInventorViewer *viewer, int ModNum) {
+        if(!imp->setEditViewer(viewer,ModNum))
+            ViewProviderT::setEditViewer(viewer,ModNum);
+    }
+    virtual void unsetEditViewer(View3DInventorViewer *viewer) {
+        if(!imp->unsetEditViewer(viewer))
+            ViewProviderT::unsetEditViewer(viewer);
     }
 
 public:

@@ -171,6 +171,15 @@ void ViewProviderDragger::setEditViewer(Gui::View3DInventorViewer* viewer, int M
       rootPickStyle->style = SoPickStyle::UNPICKABLE;
       static_cast<SoFCUnifiedSelection*>(viewer->getSceneGraph())->insertChild(rootPickStyle, 0);
       csysDragger->setUpAutoScale(viewer->getSoRenderManager()->getCamera());
+
+      auto mat = viewer->getDocument()->getEditingTransform();
+      auto feat = dynamic_cast<App::GeoFeature *>(getObject());
+      if(feat) {
+          auto matInverse = feat->Placement.getValue().toMatrix();
+          matInverse.inverse();
+          mat *= matInverse;
+      }
+      viewer->setupEditingRoot(csysDragger,&mat);
     }
 }
 

@@ -27,6 +27,8 @@
 # include <cassert>
 #endif
 
+#include <atomic>
+
 /// Here the FreeCAD includes sorted by Base,App,Gui......
 #include <Base/Writer.h>
 using Base::Writer;
@@ -45,14 +47,10 @@ TYPESYSTEM_SOURCE(App::Transaction, Base::Persistence)
 //**************************************************************************
 // Construction/Destruction
 
-Transaction::Transaction()
-  : iPos(0)
+Transaction::Transaction(int id)
 {
-}
-
-Transaction::Transaction(int pos)
-  : iPos(pos)
-{
+    if(!id) id = getNewID();
+    transID = id;
 }
 
 /**
@@ -95,6 +93,19 @@ Transaction::~Transaction()
     }
 }
 
+static std::atomic<int> _TransactionID;
+
+int Transaction::getNewID() {
+    int id = ++_TransactionID;
+    if(id) return id;
+    // wrap around? really?
+    return ++_TransactionID;
+}
+
+int Transaction::getLastID() {
+    return _TransactionID;
+}
+
 unsigned int Transaction::getMemSize (void) const
 {
     return 0;
@@ -110,9 +121,9 @@ void Transaction::Restore(Base::XMLReader &/*reader*/)
     assert(0);
 }
 
-int Transaction::getPos(void) const
+int Transaction::getID(void) const
 {
-    return iPos;
+    return transID;
 }
 
 bool Transaction::hasObject(const TransactionalObject *Obj) const

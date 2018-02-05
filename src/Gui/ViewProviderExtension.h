@@ -53,6 +53,7 @@ public:
         return std::vector<App::DocumentObject*>(); }
         
     virtual bool extensionOnDelete(const std::vector<std::string> &){ return true;}
+    virtual void extensionBeforeDelete(){}
  
     virtual std::vector<App::DocumentObject*> extensionClaimChildren(void) const { 
         return std::vector<App::DocumentObject*>(); }
@@ -62,7 +63,12 @@ public:
     virtual void extensionDragObject(App::DocumentObject*) { }
     virtual bool extensionCanDropObjects() const { return false; }
     virtual bool extensionCanDropObject(App::DocumentObject*) const { return true; }
+    virtual bool extensionCanDragAndDropObject(App::DocumentObject*) const { return true; }
     virtual void extensionDropObject(App::DocumentObject*) { }
+    virtual bool extensionCanDropObjectEx(App::DocumentObject *, App::DocumentObject *, const char *) const
+        { return false; }
+    virtual void extensionDropObjectEx(App::DocumentObject *obj, App::DocumentObject *, const char *) 
+        { extensionDropObject(obj); }
 
     /// Hides the view provider
     virtual void extensionHide(void) { }
@@ -78,6 +84,12 @@ public:
 
     //update data of extended opject
     virtual void extensionUpdateData(const App::Property*);
+
+    virtual void extensionStartRestoring() {}
+    virtual void extensionFinishRestoring() {}
+
+    virtual bool extensionGetElementPicked(const SoPickedPoint *, std::string &) const {return false;}
+    virtual bool extensionGetDetailPath(const char *, SoFullPath *, SoDetail *&) const {return false;}
     
 private:
   //Gui::ViewProviderDocumentObject* m_viewBase = nullptr;

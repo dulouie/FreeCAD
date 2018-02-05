@@ -26,6 +26,7 @@
 
 #include <Inventor/SoType.h>
 
+#include <Base/BoundBox.h>
 #include "ViewProvider.h"
 #include <App/DocumentObject.h>
 
@@ -60,15 +61,22 @@ public:
     // Display properties
     App::PropertyEnumeration DisplayMode;
     App::PropertyBool Visibility;
+    App::PropertyBool ShowInTree;
+    App::PropertyEnumeration OnTopWhenSelected;
 
     virtual void attach(App::DocumentObject *pcObject);
-    virtual void updateData(const App::Property*);
+    virtual void reattach(App::DocumentObject *) {}
+    virtual void update(const App::Property*) override;
     /// Set the active mode, i.e. the first item of the 'Display' property.
     void setActiveMode();
     /// Hide the object in the view
     virtual void hide(void);
     /// Show the object in the view
     virtual void show(void);
+
+    virtual bool canDropObjectEx(App::DocumentObject *, App::DocumentObject *, const char *) const override;
+
+    virtual bool showInTree() const;
 
     /// Get a list of TaskBoxes associated with this object
     virtual void getTaskViewContent(std::vector<Gui::TaskView::TaskContent*>&) const;
@@ -84,11 +92,34 @@ public:
     /// Get the python wrapper for that ViewProvider
     PyObject* getPyObject();
 
+    /// return a hit element given the picked point which contains the full node path
+    virtual bool getElementPicked(const SoPickedPoint *, std::string &subname) const override;
+    /// return the coin node detail and path to the node of the subelement
+    virtual SoDetail* getDetailPath(const char *subelement, SoFullPath *pPath, bool append) const override;
+
+    /* Force update visual
+     *
+     * These method exists because some view provider skips visual update when
+     * hidden (e.g. PartGui::ViewProviderPartExt). Call this function to force
+     * visual update.
+     */
+    //@{
+    virtual void forceUpdate(bool enable = true) {(void)enable;}
+    virtual bool isUpdateForced() const {return false;}
+    //@}
+
     /** @name Restoring view provider from document load */
     //@{
     virtual void startRestoring();
     virtual void finishRestoring();
     //@}
+
+    /** Return the bound box of this view object
+     *
+     * This method shall work regardless whether the current view object is
+     * visible or not.
+     */
+    Base::BoundBox3d getBoundingBox() const;
 
 protected:
     /*! Get the active mdi view of the document this view provider is part of.

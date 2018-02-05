@@ -67,8 +67,11 @@ public:
         RmvSelection,
         SetSelection,
         ClrSelection,
-        SetPreselect,
-        RmvPreselect
+        SetPreselect, // to signal observer the preselect has changed
+        RmvPreselect,
+        SetPreselectSignal, // to request 3D view to change preselect
+        PickedListChanged,
+        UpdateSelection, // to update a selection (e.g. in case of visibile change)
     };
     SelectionChanges()
     : Type(ClrSelection)
@@ -129,10 +132,11 @@ class GuiExport SelectionObserver
 
 public:
     /// Constructor
-    SelectionObserver();
+    SelectionObserver(bool attach = true, bool resolve = true);
     virtual ~SelectionObserver();
     bool blockConnection(bool block);
     bool isConnectionBlocked() const;
+    bool isConnectionAttached() const;
 
     /** Attaches to the selection. */
     void attachSelection();
@@ -145,6 +149,7 @@ private:
 private:
     typedef boost::signals::connection Connection;
     Connection connectSelection;
+    bool resolve;
 };
 
 /**
@@ -159,10 +164,10 @@ class GuiExport SelectionObserverPython : public SelectionObserver
 
 public:
     /// Constructor
-    SelectionObserverPython(const Py::Object& obj);
+    SelectionObserverPython(const Py::Object& obj, bool resolve=true);
     virtual ~SelectionObserverPython();
 
-    static void addObserver(const Py::Object& obj);
+    static void addObserver(const Py::Object& obj, bool resolve=true);
     static void removeObserver(const Py::Object& obj);
 
 private:
@@ -173,6 +178,7 @@ private:
     void clearSelection(const SelectionChanges&);
     void setPreselection(const SelectionChanges&);
     void removePreselection(const SelectionChanges&);
+    void pickedListChanged();
 
 private:
     Py::Object inst;
@@ -217,12 +223,26 @@ public:
 class GuiExport SelectionSingleton : public Base::Subject<const SelectionChanges&>
 {
 public:
+    struct SelObj {
+        const char* DocName;
+        const char* FeatName;
+        const char* SubName;
+        const char* TypeName;
+        App::Document* pDoc;
+        App::DocumentObject*  pObject;
+        float x,y,z;
+    };
+
     /// Add to selection 
-    bool addSelection(const char* pDocName, const char* pObjectName=0, const char* pSubName=0, float x=0, float y=0, float z=0);
+    bool addSelection(const char* pDocName, const char* pObjectName=0, const char* pSubName=0, 
+            float x=0, float y=0, float z=0, const std::vector<SelObj> *pickedList = 0);
     /// Add to selection with several sub-elements
     bool addSelection(const char* pDocName, const char* pObjectName, const std::vector<std::string>& pSubNames);
+    /// Update a selection 
+    bool updateSelection(const char* pDocName, const char* pObjectName=0, const char* pSubName=0);
     /// Remove from selection (for internal use)
-    void rmvSelection(const char* pDocName, const char* pObjectName=0, const char* pSubName=0);
+    void rmvSelection(const char* pDocName, const char* pObjectName=0, const char* pSubName=0, 
+            const std::vector<SelObj> *pickedList = 0);
     /// Set the selection for a document
     void setSelection(const char* pDocName, const std::vector<App::DocumentObject*>&);
     /// Clear the selection of document \a pDocName. If the document name is not given the selection of the active document is cleared.
@@ -234,8 +254,10 @@ public:
     /// Check if selected
     bool isSelected(App::DocumentObject*, const char* pSubName=0) const;
 
+    const char *getSelectedElement(App::DocumentObject*, const char* pSubName) const;
+
     /// set the preselected object (mostly by the 3D view)
-    bool setPreselect(const char* pDocName, const char* pObjectName, const char* pSubName, float x=0, float y=0, float z=0);
+    bool setPreselect(const char* pDocName, const char* pObjectName, const char* pSubName, float x=0, float y=0, float z=0, bool signal=false);
     /// remove the present preselection
     void rmvPreselect();
     /// sets different coords for the preselection 
@@ -243,7 +265,7 @@ public:
     /// returns the present preselection 
     const SelectionChanges& getPreselection(void) const;
     /// add a SelectionGate to control what is selectable
-    void addSelectionGate(Gui::SelectionGate *gate);
+    void addSelectionGate(Gui::SelectionGate *gate, bool resolve = true);
     /// remove the active SelectionGate
     void rmvSelectionGate(void);
 
@@ -253,57 +275,92 @@ public:
      * perform an operation (GuiCommand). The check also detects base types. 
      * E.g. "Part" also fits on "PartImport" or "PartTransform types.
      * If no document name is given the active document is assumed.
+     *
+     * Set 'resolve' to true to resolve any sub object inside selection SubName
+     * field
      */
-    unsigned int countObjectsOfType(const Base::Type& typeId, const char* pDocName=0) const;
+    unsigned int countObjectsOfType(const Base::Type& typeId=App::DocumentObject::getClassTypeId(),
+            const char* pDocName=0, bool resolve=true) const;
 
     /**
      * Does basically the same as the method above unless that it accepts a string literal as first argument.
      * \a typeName must be a registered type, otherwise 0 is returned.
      */
-    unsigned int countObjectsOfType(const char* typeName, const char* pDocName=0) const;
+    unsigned int countObjectsOfType(const char* typeName, 
+            const char* pDocName=0, bool resolve=true) const;
 
     /** Returns a vector of objects of type \a TypeName selected for the given document name \a pDocName.
      * If no document name is specified the objects from the active document are regarded.
      * If no objects of this document are selected an empty vector is returned.
      * @note The vector reflects the sequence of selection.
      */
-    std::vector<App::DocumentObject*> getObjectsOfType(const Base::Type& typeId, const char* pDocName=0) const;
+    std::vector<App::DocumentObject*> getObjectsOfType(const Base::Type& typeId, 
+            const char* pDocName=0, bool resolve=true) const;
 
     /**
      * Does basically the same as the method above unless that it accepts a string literal as first argument.
      * \a typeName must be a registered type otherwise an empty array is returned.
      */
-    std::vector<App::DocumentObject*> getObjectsOfType(const char* typeName, const char* pDocName=0) const;
+    std::vector<App::DocumentObject*> getObjectsOfType(const char* typeName, 
+            const char* pDocName=0, bool resolve=true) const;
     /**
      * A convenience template-based method that returns an array with the correct types already.
      */
-    template<typename T> inline std::vector<T*> getObjectsOfType(const char* pDocName=0) const;
+    template<typename T> inline std::vector<T*> getObjectsOfType(
+            const char* pDocName=0, bool resolve=true) const;
 
-    struct SelObj {
-        const char* DocName;
-        const char* FeatName;
-        const char* SubName;
-        const char* TypeName;
-        App::Document* pDoc;
-        App::DocumentObject*  pObject;
-        float x,y,z;
-    };
+    /** Resolve the last document object referenced in the subname
+     * 
+     * @param pObject: the top parent object
+     * @param subname: dot separated subname
+     * @param parent: return the direct parent of the object
+     *
+     * @return Returns the last referenced document object in the subname. If no
+     * such object in subname, return pObject.
+     * @
+     */
+    static App::DocumentObject *resolveObject(App::DocumentObject *pObject, 
+        const char *subname, App::DocumentObject **parent=0, std::string *elementName=0);
 
-    /// signal on new object
+    /** Set selection object visibility
+     *
+     * @param visible: 1: make visible, 0: make invisible, -1: toggle visibility
+     */
+    void setVisible(int visible);
+
+    /// signal on selection with un-resolved object if inside a container
     boost::signal<void (const SelectionChanges& msg)> signalSelectionChanged;
 
+    /// signal on selection change with resolved object
+    boost::signal<void (const SelectionChanges& msg)> signalSelectionChanged2;
+
     /** Returns a vector of selection objects
-     * If no document name is given the objects of the active are returned.
-     * If nothing for this Document is selected an empty vector is returned.
-     * The vector reflects the sequence of selection.
+     *
+     * @param pDocName: document name. If no document name is given the objects
+     * of the active are returned. If nothing for this Document is selected an
+     * empty vector is returned. If document name is "*", then all document is
+     * considered. 
+     * @param resolve: whether to resolve the subname reference of the selection
+     * @param single: if set to true, then it will return an empty vector if
+     * there is more than one selections.
+     *
+     * @return The returned vector reflects the sequence of selection.
      */
-    std::vector<SelObj> getSelection(const char* pDocName=0) const;
+    std::vector<SelObj> getSelection(const char* pDocName=0, bool resolve=true, bool single=false) const;
     /** Returns a vector of selection objects
-     * If no document name is given the objects of the active are returned.
-     * If nothing for this document is selected an empty vector is returned.
-     * The vector reflects the sequence of selection.
+     *
+     * @param pDocName: document name. If no document name is given the objects
+     * of the active are returned. If nothing for this Document is selected an
+     * empty vector is returned. If document name is "*", then all document is
+     * considered. 
+     * @param typeId: specify the type of object to be returned.
+     * @param resolve: whether to resolve the subname reference of the selection
+     * @param single: if set to true, then it will return an empty vector if
+     * there is more than one selections.
+     *
+     * @return The returned vector reflects the sequence of selection.
      */
-    std::vector<Gui::SelectionObject> getSelectionEx(const char* pDocName=0,Base::Type typeId=App::DocumentObject::getClassTypeId()) const;
+    std::vector<Gui::SelectionObject> getSelectionEx(const char* pDocName=0,Base::Type typeId=App::DocumentObject::getClassTypeId(),bool resolve=true, bool single=false) const;
 
     /**
      * @brief getAsPropertyLinkSubList fills PropertyLinkSubList with current selection.
@@ -313,15 +370,20 @@ public:
     int getAsPropertyLinkSubList(App::PropertyLinkSubList &prop) const;
 
     /** Returns a vector of all selection objects of all documents. */
-    std::vector<SelObj> getCompleteSelection() const;
+    std::vector<SelObj> getCompleteSelection(bool resolve=true) const;
     bool hasSelection() const;
-    bool hasSelection(const char* doc) const;
+    bool hasSelection(const char* doc, bool resolve=true) const;
 
     /// Size of selcted entities for all documents
     unsigned int size(void) const {
         return static_cast<unsigned int>(_SelList.size());
     }
 
+    bool needPickedList() const;
+    void enablePickedList(bool);
+    bool hasPickedList() const;
+    std::vector<SelectionSingleton::SelObj> getPickedList(const char* pDocName) const;
+    std::vector<Gui::SelectionObject> getPickedListEx(const char* pDocName=0,Base::Type typeId=App::DocumentObject::getClassTypeId()) const;
     static SelectionSingleton& instance(void);
     static void destruct (void);
     friend class SelectionFilter;
@@ -331,6 +393,7 @@ public:
 
 protected:
     static PyObject *sAddSelection        (PyObject *self,PyObject *args,PyObject *kwd);
+    static PyObject *sUpdateSelection     (PyObject *self,PyObject *args,PyObject *kwd);
     static PyObject *sRemoveSelection     (PyObject *self,PyObject *args,PyObject *kwd);
     static PyObject *sClearSelection      (PyObject *self,PyObject *args,PyObject *kwd);
     static PyObject *sIsSelected          (PyObject *self,PyObject *args,PyObject *kwd);
@@ -345,6 +408,11 @@ protected:
     static PyObject *sRemSelObserver      (PyObject *self,PyObject *args,PyObject *kwd);
     static PyObject *sAddSelectionGate    (PyObject *self,PyObject *args,PyObject *kwd);
     static PyObject *sRemoveSelectionGate (PyObject *self,PyObject *args,PyObject *kwd);
+    static PyObject *sGetPickedList       (PyObject *self,PyObject *args,PyObject *kwd);
+    static PyObject *sEnablePickedList    (PyObject *self,PyObject *args,PyObject *kwd);
+    static PyObject *sPreselect           (PyObject *self,PyObject *args,PyObject *kwd);
+    static PyObject *sSetVisible          (PyObject *self,PyObject *args,PyObject *kwd);
+    static PyObject *sResolveObject       (PyObject *self,PyObject *args,PyObject *kwd);
 
 protected:
     /// Construction
@@ -357,6 +425,8 @@ protected:
 
     /// helper to retrieve document by name
     App::Document* getDocument(const char* pDocName=0) const;
+
+    void slotSelectionChanged(const SelectionChanges& msg);
 
     SelectionChanges CurrentPreselection;
 
@@ -371,6 +441,14 @@ protected:
     };
     std::list<_SelObj> _SelList;
 
+    std::list<_SelObj> _PickedList;
+    bool _needPickedList;
+
+    std::vector<Gui::SelectionObject> getObjectList(const char* pDocName,Base::Type typeId, const std::list<_SelObj> &objs, bool resolve, bool single=false) const;
+
+    static App::DocumentObject *getObjectOfType(App::DocumentObject *pObject,
+            const char *subname, Base::Type type, bool resolve, const char **subelement=0);
+
     static SelectionSingleton* _pcSingleton;
 
     std::string DocName;
@@ -379,16 +457,17 @@ protected:
     float hx,hy,hz;
 
     Gui::SelectionGate *ActiveGate;
+    bool gateResolve;
 };
 
 /**
  * A convenience template-based method that returns an array with the correct types already.
  */
 template<typename T>
-inline std::vector<T*> SelectionSingleton::getObjectsOfType(const char* pDocName) const
+inline std::vector<T*> SelectionSingleton::getObjectsOfType(const char* pDocName, bool resolve) const
 {
     std::vector<T*> type;
-    std::vector<App::DocumentObject*> obj = this->getObjectsOfType(T::getClassTypeId(), pDocName);
+    std::vector<App::DocumentObject*> obj = this->getObjectsOfType(T::getClassTypeId(), pDocName, resolve);
     type.reserve(obj.size());
     for (std::vector<App::DocumentObject*>::iterator it = obj.begin(); it != obj.end(); ++it)
         type.push_back(static_cast<T*>(*it));

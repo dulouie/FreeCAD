@@ -84,6 +84,11 @@ protected:
     void slotFinishRestoreDocument(const App::Document&);
     void slotUndoDocument(const App::Document&);
     void slotRedoDocument(const App::Document&);
+    void slotShowHidden(const App::Document&);
+    void slotFinishImportObjects(const std::vector<App::DocumentObject*> &);
+    void slotFinishRestoreObject(const App::DocumentObject &obj);
+    void slotRecomputed(const App::Document&);
+    void slotTouchedObject(const App::DocumentObject &);
     //@}
 
     void addViewProvider(Gui::ViewProviderDocumentObject*);
@@ -114,6 +119,8 @@ public:
     /// signal on changed Object, the 2nd argument is the highlite mode to use
     mutable boost::signal<void (const Gui::ViewProviderDocumentObject&,
                                 const Gui::TreeItemMode&)>               signalExpandObject;
+    /// signal on changed ShowInTree property in view provider
+    mutable boost::signal<void (const Gui::ViewProviderDocumentObject&)> signalShowItem;
     /// signal on scrolling to an object
     mutable boost::signal<void (const Gui::ViewProviderDocumentObject&)> signalScrollToObject;
     /// signal on undo Document
@@ -183,7 +190,11 @@ public:
     /// Detach a view (get called by the MDIView destructor)
     void detachView(Gui::BaseView* pcView, bool bPassiv=false);
     /// helper for selection
-    ViewProvider* getViewProviderByPathFromTail(SoPath * path) const;
+    ViewProviderDocumentObject* getViewProviderByPathFromTail(SoPath * path) const;
+    /// helper for selection
+    ViewProviderDocumentObject* getViewProviderByPathFromHead(SoPath * path) const;
+    /// Get all view providers along the path and the corresponding node index in the path
+    std::vector<std::pair<ViewProviderDocumentObject*,int> > getViewProvidersByPath(SoPath * path) const;
     /// call update on all attached views
     void onUpdate(void);
     /// call relabel to all attached views
@@ -198,6 +209,7 @@ public:
     //@{
     /// Get the view provider for that object
     ViewProvider* getViewProvider(const App::DocumentObject *) const;
+    ViewProviderDocumentObject *getViewProvider(SoNode *node) const;
     /// set an annotation view provider
     void setAnnotationViewProvider(const char* name, ViewProvider *pcProvider);
     /// get an annotation view provider
@@ -215,11 +227,18 @@ public:
     std::vector<ViewProvider*> getViewProvidersOfType(const Base::Type& typeId) const;
     ViewProvider *getViewProviderByName(const char* name) const;
     /// set the ViewProvider in special edit mode
-    bool setEdit(Gui::ViewProvider* p, int ModNum=0);
-    /// reset from edit mode
+    bool setEdit(Gui::ViewProvider* p, int ModNum=0, const char *subname=0);
+    Base::Matrix4D getEditingTransform() const;
+    void setEditingTransform(const Base::Matrix4D &mat);
+    /// reset from edit mode, this cause all document to reset edit
     void resetEdit(void);
+    /// reset edit of this document
+    void _resetEdit(void);
     /// get the in edit ViewProvider or NULL
-    ViewProvider *getInEdit(void) const;
+    ViewProvider *getInEdit(ViewProviderDocumentObject **parentVp=0, 
+            std::string *subname=0, int *mode=0) const;
+    /// set the in edit ViewProvider subname reference
+    void setInEdit(ViewProviderDocumentObject *parentVp, const char *subname);
     //@}
 
     /** @name methods for the UNDO REDO handling */
@@ -240,11 +259,20 @@ public:
     void undo(int iSteps);
     /// Will REDO one or more steps
     void redo(int iSteps) ;
+    /** Check if the document is performing undo/redo transaction
+     *
+     * Unlink App::Document::isPerformingTransaction(), Gui::Document will
+     * report transacting when triggering grouped undo/redo in other documents
+     */
+    bool isPerformingTransaction() const;
     //@}
 
     /// handels the application close event
     bool canClose();
     bool isLastView(void);
+
+    /// called by Application before being deleted
+    void beforeDelete();
 
     virtual PyObject *getPyObject(void);
 
@@ -254,7 +282,10 @@ protected:
 
 private:
     //handles the scene graph nodes to correctly group child and parents
-    void handleChildren3D(ViewProvider* viewProvider);
+    void handleChildren3D(ViewProvider* viewProvider, bool deleting=false);
+
+    /// Check other documents for the same transaction ID
+    bool checkTransactionID(bool undo, int iSteps);
 
     struct DocumentP* d;
     static int _iDocCount;

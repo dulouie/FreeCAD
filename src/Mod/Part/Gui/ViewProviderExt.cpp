@@ -228,6 +228,7 @@ const char* ViewProviderPartExt::DrawStyleEnums[]= {"Solid","Dashed","Dotted","D
 ViewProviderPartExt::ViewProviderPartExt() 
 {
     VisualTouched = true;
+    forceUpdateCount = 0;
     NormalsFromUV = true;
 
     ParameterGrp::handle hView = App::GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/View");
@@ -342,13 +343,13 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
     // https://forum.freecadweb.org/viewtopic.php?f=3&t=24912&p=195613
     Part::Feature* feature = dynamic_cast<Part::Feature*>(pcObject);
     if (prop == &Deviation) {
-        if(Visibility.getValue() && feature && !feature->Shape.getValue().IsNull()) 
+        if((isUpdateForced()||Visibility.getValue()) && feature && !feature->Shape.getValue().IsNull()) 
             updateVisual(feature->Shape.getValue());
         else
             VisualTouched = true;
     }
     if (prop == &AngularDeflection) {
-        if(Visibility.getValue() && feature && !feature->Shape.getValue().IsNull()) 
+        if((isUpdateForced()||Visibility.getValue()) && feature && !feature->Shape.getValue().IsNull()) 
             updateVisual(feature->Shape.getValue());
         else
             VisualTouched = true;
@@ -450,7 +451,7 @@ void ViewProviderPartExt::onChanged(const App::Property* prop)
     }
     else {
         // if the object was invisible and has been changed, recreate the visual
-        if (prop == &Visibility && Visibility.getValue() && VisualTouched) {
+        if (prop == &Visibility && (isUpdateForced() || Visibility.getValue()) && VisualTouched) {
             updateVisual(feature->Shape.getValue());
             // The material has to be checked again (#0001736)
             onChanged(&DiffuseColor);
@@ -487,10 +488,10 @@ void ViewProviderPartExt::attach(App::DocumentObject *pcFeat)
     wireframe->addChild(lineset);
 
     // normal viewing with edges and points
+    pcNormalRoot->addChild(pcPointsRoot);
     pcNormalRoot->addChild(wireframe);
     pcNormalRoot->addChild(offset);
     pcNormalRoot->addChild(pcFlatRoot);
-    pcNormalRoot->addChild(pcPointsRoot);
 
     // just faces with no edges or points
     pcFlatRoot->addChild(pShapeHints);
@@ -819,7 +820,7 @@ void ViewProviderPartExt::updateData(const App::Property* prop)
         const TopoDS_Shape &cShape = static_cast<const Part::PropertyPartShape*>(prop)->getValue();
 
         // calculate the visual only if visible
-        if (Visibility.getValue())
+        if (isUpdateForced()||Visibility.getValue())
             updateVisual(cShape);
         else
             VisualTouched = true;
@@ -1217,3 +1218,14 @@ void ViewProviderPartExt::updateVisual(const TopoDS_Shape& inputShape)
 #   endif
     VisualTouched = false;
 }
+
+void ViewProviderPartExt::forceUpdate(bool enable) {
+    if(enable) {
+        if(++forceUpdateCount == 1) {
+            if(!isShow())
+                Visibility.touch();
+        }
+    }else if(forceUpdateCount)
+        --forceUpdateCount;
+}
+

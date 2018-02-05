@@ -128,6 +128,11 @@ public:
     void unsetHighlightedPoints();
     //@}
 
+    virtual bool isUpdateForced() const override {
+        return forceUpdateCount>0;
+    }
+    virtual void forceUpdate(bool enable = true) override;
+
     /** @name Edit methods */
     //@{
     void setupContextMenu(QMenu*, QObject*, const char*);
@@ -166,6 +171,7 @@ protected:
 
 private:
     // settings stuff
+    int forceUpdateCount;
     static App::PropertyFloatConstraint::Constraints sizeRange;
     static App::PropertyFloatConstraint::Constraints tessRange;
     static App::PropertyQuantityConstraint::Constraints angDeflectionRange;

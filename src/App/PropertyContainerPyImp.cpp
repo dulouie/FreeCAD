@@ -59,6 +59,27 @@ PyObject*  PropertyContainerPy::getPropertyByName(PyObject *args)
     }
 }
 
+PyObject*  PropertyContainerPy::getPropertyTouchList(PyObject *args)
+{
+    char *pstr;
+    if (!PyArg_ParseTuple(args, "s", &pstr))     // convert args: Python->C
+        return NULL;                             // NULL triggers exception
+    App::Property* prop = getPropertyContainerPtr()->getPropertyByName(pstr);
+    if (prop && prop->isDerivedFrom(PropertyLists::getClassTypeId())) {
+        const auto &touched = static_cast<PropertyLists*>(prop)->getTouchList();
+        Py::Tuple ret(touched.size());
+        int i=0;
+        for(int idx : touched)
+            ret.setItem(i++,Py::Long(idx));
+        return Py::new_reference_to(ret);
+    }
+    else if(!prop)
+        PyErr_Format(PyExc_AttributeError, "Property container has no property '%s'", pstr);
+    else
+        PyErr_Format(PyExc_AttributeError, "Property '%s' is not of list type", pstr);
+    return NULL;
+}
+
 PyObject*  PropertyContainerPy::getTypeOfProperty(PyObject *args)
 {
     Py::List ret;
@@ -155,6 +176,122 @@ PyObject*  PropertyContainerPy::setEditorMode(PyObject *args)
 
     PyErr_SetString(PyExc_TypeError, "First argument must be str, second can be int, list or tuple");
     return 0;
+}
+
+static const std::map<std::string, int> &getStatusMap() {
+    static std::map<std::string,int> statusMap;
+    if(statusMap.empty()) {
+        statusMap["Immutable"] = 1;
+        statusMap["ReadOnly"] = 2;
+        statusMap["Hidden"] = 3;
+        statusMap["Transient"] = 4;
+        statusMap["MaterialEdit"] = 5;
+        statusMap["MaterialListEdit"] = 6;
+        statusMap["Output"] = 7;
+        statusMap["NoModify"] = 9;
+    }
+    return statusMap;
+}
+
+PyObject*  PropertyContainerPy::setPropertyStatus(PyObject *args)
+{
+    char* name;
+    PyObject *pyValue;
+    if (!PyArg_ParseTuple(args, "sO", &name, &pyValue))
+        return 0;
+    App::Property* prop = getPropertyContainerPtr()->getPropertyByName(name);
+    if (!prop) {
+        PyErr_Format(PyExc_AttributeError, "Property container has no property '%s'", name);
+        return 0;
+    }
+
+    std::map<int,bool> status;
+    size_t count = 1;
+    bool isSeq = false;
+    if(PyList_Check(pyValue) || PyTuple_Check(pyValue)) {
+        isSeq = true;
+        count = PySequence_Size(pyValue);
+    }
+    for(size_t i=0;i<count;++i) {
+        Py::Object item;
+        if(isSeq)
+            item = Py::Object(PySequence_GetItem(pyValue,i));
+        else
+            item = Py::Object(pyValue);
+        bool value = true;
+        if(item.isString()) {
+            const auto &statusMap = getStatusMap();
+            auto v = (std::string)Py::String(item);
+            if(v.size()>1 && v[0] == '-') {
+                value = false;
+                v = v.substr(1);
+            }
+            auto it = statusMap.find(v);
+            if(it == statusMap.end()) {
+                PyErr_Format(PyExc_ValueError, "Unknown property status '%s'", v.c_str());
+                return 0;
+            }
+            status.insert(std::make_pair(it->second,value));
+        }else if(item.isNumeric()) {
+            int v = Py::Int(item);
+            if(v<0) {
+                value = false;
+                v = -v;
+            }
+            if(v==0 || v>31)
+                PyErr_Format(PyExc_ValueError, "Status value out of range '%d'", v);
+            status.insert(std::make_pair(v,value));
+        } else {
+            PyErr_SetString(PyExc_TypeError, "Expects status type to be Int or String");
+            return 0;
+        }
+    }
+
+    bool changed = false;
+    for(auto &v : status) {
+        Property::Status s = (Property::Status)v.first;
+        if(prop->testStatus(s)!=v.second) {
+            changed = true;
+            prop->setStatus(s, v.second);
+        }
+    }
+    if(changed)
+        GetApplication().signalChangePropertyEditor(*prop);
+
+    Py_Return;
+}
+
+PyObject*  PropertyContainerPy::getPropertyStatus(PyObject *args)
+{
+    char* name = "";
+    if (!PyArg_ParseTuple(args, "|s", &name))     // convert args: Python->C
+        return NULL;                             // NULL triggers exception
+
+    Py::List ret;
+    const auto &statusMap = getStatusMap();
+    if(!name[0]) {
+        for(auto &v : statusMap)
+            ret.append(Py::String(v.first.c_str()));
+    }else{
+        App::Property* prop = getPropertyContainerPtr()->getPropertyByName(name);
+        if (prop) {
+            std::bitset<32> bits(prop->getStatus());
+            for(size_t i=1;i<bits.size();++i) {
+                if(!bits[i]) continue;
+                bool found = false;
+                for(auto &v : statusMap) {
+                    if(v.second == (int)i) {
+                        ret.append(Py::String(v.first.c_str()));
+                        found = true;
+                        break;
+                    }
+                }
+                if(!found) 
+                    ret.append(Py::Int((long)i));
+            }
+        }
+    }
+    return Py::new_reference_to(ret);
 }
 
 PyObject*  PropertyContainerPy::getEditorMode(PyObject *args)
@@ -267,8 +404,9 @@ int PropertyContainerPy::setCustomAttributes(const char* attr, PyObject *obj)
     Property *prop = getPropertyContainerPtr()->getPropertyByName(attr);
     if (prop) {
         // Read-only attributes must not be set over its Python interface
-        short Type =  getPropertyContainerPtr()->getPropertyType(prop);
-        if (Type & Prop_ReadOnly) {
+        if(prop->testStatus(Property::Immutable) ||
+           (getPropertyContainerPtr()->getPropertyType(prop) & Prop_ReadOnly))
+        {
             std::stringstream s;
             s << "Object attribute '" << attr << "' is read-only";
             throw Py::AttributeError(s.str());

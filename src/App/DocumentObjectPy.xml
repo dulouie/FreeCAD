@@ -52,9 +52,82 @@
         </Methode>
         <Methode Name="recompute">
             <Documentation>
-                <UserDocu>Recomputes this object</UserDocu>
+                <UserDocu>recompute(recursive=False): Recomputes this object</UserDocu>
             </Documentation>
         </Methode>
+        <Methode Name="getSubObject" Keyword="true">
+            <Documentation>
+                <UserDocu>
+getSubObject(subname, retType=0, matrix=None, transform=True, depth=0)
+
+* subname(string|list|tuple): dot separated string or sequence of strings
+referencing subobject.
+
+* retType: return type, 0=PyObject, 1=DocObject, 2=DocAndPyObject
+
+    PyObject: return a python binding object for the (sub)object referenced in
+    each 'subname' The actual type of 'PyObject' is impelementation dependent.
+    For Part::Feature compatible objects, this will be of type TopoShapePy and
+    pre-transformed by accumulated transformation matrix along the object path.  
+
+    DocObject:  return the document object referenced in subname, if 'matrix' is
+    None. Or, return a tuple (object, matrix) for each 'subname' and 'matrix' is
+    the accumulated transformation matrix for the sub object.
+
+    DocAndPyObject: return a tuple (object, matrix, pyobj) for each subname
+
+* matrix: the initial transformation to be applied to the sub object.
+
+* transform: whether to transform the sub object using this object's placement
+
+* depth: current recursive depth
+                </UserDocu>
+            </Documentation>
+        </Methode>
+        <Methode Name="getSubObjects">
+            <Documentation>
+                <UserDocu>getSubObjects(): Return subname reference of all sub-objects</UserDocu>
+            </Documentation>
+        </Methode>
+        <Methode Name="getLinkedObject" Keyword="true">
+            <Documentation>
+                <UserDocu>
+                    getLinkedObject(recursive=True, matrix=None, transform=True, depth=0)
+                    Returns the linked object if there is one, or else return itself
+
+                    * recusive: whether to recursively resolve the links
+
+                    * transform: whether to transform the sub object using this object's placement
+
+                    * matrix: If not none, this sepcifies the initial transformation to be applied
+                    to the sub object. And cause the method to return a tuple (object, matrix)
+                    containing the accumulated transformation matrix
+
+                    * depth: current recursive depth
+                </UserDocu>
+            </Documentation>
+        </Methode>
+		<Methode Name="setElementVisible">
+			<Documentation>
+                <UserDocu>
+                    setElementVisible(element,visible): Set the visibility of a child element
+                    Return -1 if element visibility is not supported, 0 if element not found, 1 if success
+                </UserDocu>
+			</Documentation>
+		</Methode>
+		<Methode Name="isElementVisible">
+			<Documentation>
+                <UserDocu>
+                    isElementVisible(element): Check if a child element is visible
+                    Return -1 if element visibility is not supported or element not found, 0 if invisible, or else 1
+                </UserDocu>
+			</Documentation>
+		</Methode>
+		<Methode Name="hasChildElement">
+			<Documentation>
+                <UserDocu>Return true to indicate the object having child elements</UserDocu>
+			</Documentation>
+		</Methode>
         <Methode Name="getParentGroup">
             <Documentation>
                 <UserDocu>Returns the group the object is in or None if it is not part of a group. 
@@ -98,6 +171,18 @@
       </Documentation>
       <Parameter Name="InListRecursive" Type="List"/>
     </Attribute>
+    <Attribute Name="InListEx" ReadOnly="true">
+      <Documentation>
+        <UserDocu>A list of all objects which link to this object, including any external parents.</UserDocu>
+      </Documentation>
+      <Parameter Name="InListEx" Type="List"/>
+    </Attribute>
+    <Attribute Name="InListExRecrusive" ReadOnly="true">
+      <Documentation>
+        <UserDocu>A list of all objects which link to this object recursively, including any external parents.</UserDocu>
+      </Documentation>
+      <Parameter Name="InListExRecrusive" Type="List"/>
+    </Attribute>
     <Attribute Name="Name" ReadOnly="true">
 			<Documentation>
 				<UserDocu>Return the internal name of this object</UserDocu>
@@ -124,5 +209,11 @@ or None if the GUI is not up</UserDocu>
 			<Parameter Name="ViewObject" Type="Object"/>
 		</Attribute>
 		<CustomAttributes />
+		<Attribute Name="MustExecute" ReadOnly="true">
+			<Documentation>
+                <UserDocu>Check if the object must be recomputed</UserDocu>
+			</Documentation>
+			<Parameter Name="MustExecute" Type="Boolean"/>
+		</Attribute>
 	</PythonExport>
 </GenerateModel>

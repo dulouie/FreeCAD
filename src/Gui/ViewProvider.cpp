@@ -29,6 +29,7 @@
 # include <Inventor/SoPickedPoint.h>
 # include <Inventor/nodes/SoSeparator.h>
 # include <Inventor/nodes/SoSwitch.h>
+# include <Inventor/details/SoDetail.h>
 # include <Inventor/nodes/SoTransform.h>
 # include <Inventor/nodes/SoCamera.h>
 # include <Inventor/events/SoMouseButtonEvent.h>
@@ -53,8 +54,11 @@
 #include "View3DInventorViewer.h"
 #include "SoFCDB.h"
 #include "ViewProviderExtension.h"
+#include "SoFCUnifiedSelection.h"
 
 #include <boost/bind.hpp>
+
+FC_LOG_LEVEL_INIT("ViewProvider",true,true)
 
 using namespace std;
 using namespace Gui;
@@ -103,11 +107,13 @@ ViewProvider::~ViewProvider()
         pcAnnotation->unref();
 }
 
-bool ViewProvider::startEditing(int ModNum)
+ViewProvider *ViewProvider::startEditing(int ModNum)
 {
-    bool ok = setEdit(ModNum);
-    if (ok) _iEditMode = ModNum;
-    return ok;
+    if(setEdit(ModNum)) {
+        _iEditMode = ModNum;
+        return this;
+    }
+    return 0;
 }
 
 int ViewProvider::getEditingMode() const
@@ -263,7 +269,7 @@ void ViewProvider::setTransformation(const SbMatrix &rcMatrix)
     pcTransform->setMatrix(rcMatrix);
 }
 
-SbMatrix ViewProvider::convert(const Base::Matrix4D &rcMatrix) const
+SbMatrix ViewProvider::convert(const Base::Matrix4D &rcMatrix)
 {
     double dMtrx[16];
     rcMatrix.getGLMatrix(dMtrx);
@@ -271,6 +277,15 @@ SbMatrix ViewProvider::convert(const Base::Matrix4D &rcMatrix) const
                     dMtrx[4], dMtrx[5], dMtrx[6],  dMtrx[7],
                     dMtrx[8], dMtrx[9], dMtrx[10], dMtrx[11],
                     dMtrx[12],dMtrx[13],dMtrx[14], dMtrx[15]);
+}
+
+Base::Matrix4D ViewProvider::convert(const SbMatrix &smat)
+{
+    Base::Matrix4D mat;
+    for(int i=0;i<4;++i)
+        for(int j=0;j<4;++j)
+            mat[i][j] = smat[j][i];
+    return mat;
 }
 
 void ViewProvider::addDisplayMaskMode(SoNode *node, const char* type)
@@ -417,6 +432,8 @@ void ViewProvider::setDefaultMode(int val)
 void ViewProvider::onChanged(const App::Property* prop)
 {
     Application::Instance->signalChangedObject(*this, *prop);
+
+    App::TransactionalObject::onChanged(prop);
 }
 
 std::string ViewProvider::toString() const
@@ -496,78 +513,14 @@ bool ViewProvider::checkRecursion(SoNode* node)
 
 SoPickedPoint* ViewProvider::getPointOnRay(const SbVec2s& pos, const View3DInventorViewer* viewer) const
 {
-    //first get the path to this node and calculate the current transformation
-    SoSearchAction sa;
-    sa.setNode(pcRoot);
-    sa.setSearchingAll(true);
-    sa.apply(viewer->getSoRenderManager()->getSceneGraph());
-    if (!sa.getPath())
-        return nullptr;
-    SoGetMatrixAction gm(viewer->getSoRenderManager()->getViewportRegion());
-    gm.apply(sa.getPath());
-
-    SoTransform* trans = new SoTransform;
-    trans->setMatrix(gm.getMatrix());
-    trans->ref();
-    
-    // build a temporary scenegraph only keeping this viewproviders nodes and the accumulated 
-    // transformation
-    SoSeparator* root = new SoSeparator;
-    root->ref();
-    root->addChild(viewer->getSoRenderManager()->getCamera());
-    root->addChild(trans);
-    root->addChild(pcRoot);
-
-    //get the picked point
-    SoRayPickAction rp(viewer->getSoRenderManager()->getViewportRegion());
-    rp.setPoint(pos);
-    rp.setRadius(viewer->getPickRadius());
-    rp.apply(root);
-    root->unref();
-    trans->unref();
-
-    SoPickedPoint* pick = rp.getPickedPoint();
-    return (pick ? new SoPickedPoint(*pick) : 0);
+    return viewer->getPointOnRay(pos,const_cast<ViewProvider*>(this));
 }
 
 SoPickedPoint* ViewProvider::getPointOnRay(const SbVec3f& pos,const SbVec3f& dir, const View3DInventorViewer* viewer) const
 {
-    // Note: There seems to be a bug with setRay() which causes SoRayPickAction
-    // to fail to get intersections between the ray and a line
-    
-    //first get the path to this node and calculate the current setTransformation
-    SoSearchAction sa;
-    sa.setNode(pcRoot);
-    sa.setSearchingAll(true);
-    sa.apply(viewer->getSoRenderManager()->getSceneGraph());
-    SoGetMatrixAction gm(viewer->getSoRenderManager()->getViewportRegion());
-    gm.apply(sa.getPath());
-    
-    // build a temporary scenegraph only keeping this viewproviders nodes and the accumulated 
-    // transformation
-    SoTransform* trans = new SoTransform;
-    trans->ref();
-    trans->setMatrix(gm.getMatrix());
-    
-    SoSeparator* root = new SoSeparator;
-    root->ref();
-    root->addChild(viewer->getSoRenderManager()->getCamera());
-    root->addChild(trans);
-    root->addChild(pcRoot);
-    
-    //get the picked point
-    SoRayPickAction rp(viewer->getSoRenderManager()->getViewportRegion());
-    rp.setRay(pos,dir);
-    rp.setRadius(viewer->getPickRadius());
-    rp.apply(root);
-    root->unref();
-    trans->unref();
-
-    // returns a copy of the point
-    SoPickedPoint* pick = rp.getPickedPoint();
-    //return (pick ? pick->copy() : 0); // needs the same instance of CRT under MS Windows
-    return (pick ? new SoPickedPoint(*pick) : 0);
+    return viewer->getPointOnRay(pos,dir,const_cast<ViewProvider*>(this));
 }
+
 
 std::vector<Base::Vector3d> ViewProvider::getModelPoints(const SoPickedPoint* pp) const
 {
@@ -681,6 +634,17 @@ bool ViewProvider::canDropObjects() const {
     return false;
 }
 
+bool ViewProvider::canDragAndDropObject(App::DocumentObject* obj) const {
+
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector){
+        if(!ext->extensionCanDragAndDropObject(obj))
+            return false;
+    }
+
+    return true;
+}
+
 void ViewProvider::dropObject(App::DocumentObject* obj) {
 
     auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
@@ -694,11 +658,38 @@ void ViewProvider::dropObject(App::DocumentObject* obj) {
     throw Base::RuntimeError("ViewProvider::dropObject: no extension for dropping given object available.");
 }
 
+bool ViewProvider::canDropObjectEx(
+        App::DocumentObject* obj, App::DocumentObject *owner, const char *subname) const
+{
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector){
+        if(ext->extensionCanDropObjectEx(obj,owner,subname))
+            return true;
+    }
+    return canDropObject(obj);
+}
+
+void ViewProvider::dropObjectEx(App::DocumentObject* obj, App::DocumentObject *owner, const char *subname) {
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector) {
+        if(ext->extensionCanDropObjectEx(obj, owner, subname)) {
+            ext->extensionDropObjectEx(obj, owner, subname);
+            return;
+        }
+    }
+    dropObject(obj);
+}
+
 void ViewProvider::Restore(Base::XMLReader& reader) {
-    
-    setStatus(Gui::isRestoring, true);
+    // Because some PropertyLists type properties are stored in a separate file,
+    // and is thus restored outside this function. So we rely on Gui::Document
+    // to set the isRestoring flags for us.
+    //
+    // setStatus(Gui::isRestoring, true);
+
     TransactionalObject::Restore(reader);
-    setStatus(Gui::isRestoring, false);
+
+    // setStatus(Gui::isRestoring, false);
 }
 
 void ViewProvider::updateData(const App::Property* prop) {
@@ -764,3 +755,73 @@ std::vector< App::DocumentObject* > ViewProvider::claimChildren3D(void) const {
     }
     return vec;
 }
+bool ViewProvider::getElementPicked(const SoPickedPoint *pp, std::string &subname) const {
+    if(!isSelectable()) return false;
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector)
+        if(ext->extensionGetElementPicked(pp,subname))
+            return true;
+    subname = getElement(pp?pp->getDetail():0);
+    return true;
+}
+
+SoDetail *ViewProvider::getDetailPath(const char *subelement, SoFullPath *pPath, bool append) const {
+    if(append) {
+        pPath->append(pcRoot);
+        pPath->append(pcModeSwitch);
+    }
+    SoDetail *det = 0;
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector)
+        if(ext->extensionGetDetailPath(subelement,pPath,det))
+            return det;
+    return getDetail(subelement);
+}
+
+int ViewProvider::partialRender(const std::vector<std::string> &elements, bool clear) {
+    if(elements.empty()) {
+        auto node = pcModeSwitch->getChild(_iActualMode);
+        if(node) {
+            FC_LOG("partial render clear");
+            SoSelectionElementAction action(SoSelectionElementAction::None,true);
+            action.apply(node);
+        }
+    }
+    int count = 0;
+    SoFullPath *path = static_cast<SoFullPath*>(new SoPath);
+    path->ref();
+    SoSelectionElementAction action(clear?SoSelectionElementAction::Remove:
+        SoSelectionElementAction::Append,true);
+    for(const auto &element : elements) {
+        path->truncate(0);
+        SoDetail *det = getDetailPath(element.c_str(),path,false);
+        if(!det) {
+            FC_LOG("partial render element not found: " << element);
+            continue;
+        }
+        FC_LOG("partial render (" << path->getLength() << "): " << element);
+        action.setElement(det);
+        action.apply(path);
+        delete det;
+        ++count;
+    }
+    path->unref();
+    return count;
+}
+
+bool ViewProvider::useNewSelectionModel() const {
+    static int useNewModel = -1;
+    if(useNewModel<0) {
+        ParameterGrp::handle hGrp = 
+            App::GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/View");
+        useNewModel = hGrp->GetBool("UseNewSelection",true)?1:0;
+    }
+    return useNewModel>0;
+}
+
+void ViewProvider::beforeDelete() {
+    auto vector = getExtensionsDerivedFromType<Gui::ViewProviderExtension>();
+    for(Gui::ViewProviderExtension* ext : vector)
+        ext->extensionBeforeDelete();
+}
+

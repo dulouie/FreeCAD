@@ -111,6 +111,7 @@
 #include "Transactions.h"
 #include <App/MaterialPy.h>
 #include <Base/GeometryPyCXX.h>
+#include "Link.h"
 
 // If you stumble here, run the target "BuildExtractRevision" on Windows systems
 // or the Python script "SubWCRev.py" on Linux based systems which builds
@@ -150,35 +151,6 @@ using namespace Base;
 using namespace App;
 using namespace std;
 
-/** Observer that watches relabeled objects and make sure that the labels inside
- * a document are unique.
- * @note In the FreeCAD design it is explicitly allowed to have duplicate labels
- * (i.e. the user visible text e.g. in the tree view) while the internal names
- * are always guaranteed to be unique.
- */
-class ObjectLabelObserver
-{
-public:
-    /// The one and only instance.
-    static ObjectLabelObserver* instance();
-    /// Destructs the sole instance.
-    static void destruct ();
-
-    /** Checks the new label of the object and relabel it if needed
-     * to make it unique document-wide
-     */
-    void slotRelabelObject(const App::DocumentObject&, const App::Property&);
-
-private:
-    static ObjectLabelObserver* _singleton;
-
-    ObjectLabelObserver();
-    ~ObjectLabelObserver();
-    const App::DocumentObject* current;
-    ParameterGrp::handle _hPGrp;
-};
-
-
 //==========================================================================
 // Application
 //==========================================================================
@@ -213,7 +185,7 @@ PyDoc_STRVAR(Base_doc,
     );
 
 Application::Application(std::map<std::string,std::string> &mConfig)
-  : _mConfig(mConfig), _pActiveDoc(0)
+  : _mConfig(mConfig), _pActiveDoc(0),_allowPending(false),_isRestoring(false),_objCount(-1)
 {
     //_hApp = new ApplicationOCC;
     mpcPramManager["System parameter"] = _pcSysParamMngr;
@@ -425,6 +397,8 @@ bool Application::closeDocument(const char* name)
     std::unique_ptr<Document> delDoc (pos->second);
     DocMap.erase( pos );
 
+    _objCount = -1;
+
     // Trigger observers after removing the document from the internal map.
     signalDeletedDocument();
 
@@ -491,7 +465,56 @@ std::string Application::getUniqueDocumentName(const char *Name) const
     }
 }
 
+bool Application::addPendingDocument(const char *FileName) {
+    if(!_allowPending || !FileName) return false;
+    auto ret =  _pendingDocMap.insert(FileName);
+    if(ret.second)
+        _pendingDocs.push_back(ret.first->c_str());
+    return true;
+}
+
+bool Application::isRestoring() const {
+    return _isRestoring;
+}
+
 Document* Application::openDocument(const char * FileName)
+{
+    Base::FlagToggler<> flag(_isRestoring);
+    _pendingDocs.clear();
+    _pendingDocMap.clear();
+    _allowPending = true;
+
+    _pendingDocs.push_back(FileName?FileName:"");
+
+    std::deque<Document *> newDocs;
+
+    while(_pendingDocs.size()) {
+        const char *name = _pendingDocs.front();
+        try {
+            _objCount = -1;
+            newDocs.push_front(openDocumentPrivate(name));
+            _objCount = -1;
+        }catch(const Base::Exception &e) {
+            if(newDocs.empty()) throw;
+            Console().Error("Exception opening file: %s [%s]\n", name, e.what());
+        }catch(...) {
+            _allowPending = false;
+            _pendingDocs.clear();
+            _pendingDocMap.clear();
+            throw;
+        }
+        _pendingDocs.pop_front();
+    }
+    _allowPending = false;
+    _pendingDocs.clear();
+    _pendingDocMap.clear();
+
+    for(auto doc : newDocs) 
+        doc->afterRestore(true);
+    return newDocs.back();
+}
+
+Document* Application::openDocumentPrivate(const char * FileName)
 {
     FileInfo File(FileName);
 
@@ -522,7 +545,7 @@ Document* Application::openDocument(const char * FileName)
 
     try {
         // read the document
-        newDoc->restore();
+        newDoc->restore(true);
         return newDoc;
     }
     // if the project file itself is corrupt then
@@ -587,6 +610,46 @@ void Application::setActiveDocument(const char *Name)
     }
 }
 
+int Application::setActiveTransaction(const char *name) {
+    if(!name || !name[0])
+        throw Base::ValueError("Invalid transaction name");
+    _activeTransactionID = 0;
+    for(auto &v : DocMap)
+        v.second->commitTransaction();
+    _activeTransactionID = Transaction::getNewID();
+    _activeTransactionName = name;
+    return _activeTransactionID;
+}
+
+const char *Application::getActiveTransaction(int *id) const {
+    int tid = 0;
+    if(Transaction::getLastID() == _activeTransactionID)
+        tid = _activeTransactionID;
+    if(id) *id = tid;
+    return tid?_activeTransactionName.c_str():0;
+}
+
+void Application::closeActiveTransaction(bool abort, int id) {
+    if(!id) id = _activeTransactionID;
+    if(!id) return;
+    _activeTransactionID = 0;
+    for(auto &v : DocMap) {
+        if(v.second->getTransactionID(true) != id)
+            continue;
+        if(abort)
+            v.second->abortTransaction();
+        else
+            v.second->commitTransaction();
+    }
+}
+
+bool Application::autoTransaction() {
+    static ParameterGrp::handle hGrp;
+    if(!hGrp) 
+        hGrp = GetUserParameter().GetGroup("BaseApp")->GetGroup("Preferences")->GetGroup("Document");
+    return hGrp->GetBool("AutoTransaction",true);
+}
+
 const char* Application::getHomePath(void) const
 {
     return _mConfig["AppHomePath"].c_str();
@@ -646,6 +709,36 @@ std::string Application::getHelpDir()
 #else
     return mConfig["DocPath"];
 #endif
+}
+
+int Application::checkLinkDepth(int depth, bool no_exception) {
+    if(_objCount<0) {
+        _objCount = 0;
+        for(auto &v : DocMap) 
+            _objCount += v.second->countObjects();
+    }
+    if(depth > _objCount+2) {
+        if(no_exception) {
+            Console().Error("Link recursion limit reached. "
+                "Please check for cyclic reference.\n");
+            return 0;
+        }else
+            throw Base::RuntimeError("Link recursion limit reached. "
+                    "Please check for cyclic reference. ");
+    }
+    return _objCount+2;
+}
+
+std::set<DocumentObject *> Application::getLinksTo(
+        const DocumentObject *obj, bool recursive, int maxCount) const
+{
+    std::set<DocumentObject *> links;
+    for(auto &v : DocMap) {
+        v.second->getLinksTo(links,obj,recursive,maxCount);
+        if(maxCount && (int)links.size()>=maxCount)
+            break;
+    }
+    return links;
 }
 
 ParameterManager & Application::GetSystemParameter(void)
@@ -943,11 +1036,13 @@ std::map<std::string, std::string> Application::getExportFilters(void) const
 void Application::slotNewObject(const App::DocumentObject&O)
 {
     this->signalNewObject(O);
+    _objCount = -1;
 }
 
 void Application::slotDeletedObject(const App::DocumentObject&O)
 {
     this->signalDeletedObject(O);
+    _objCount = -1;
 }
 
 void Application::slotChangedObject(const App::DocumentObject&O, const App::Property& P)
@@ -1250,6 +1345,7 @@ void Application::initTypes(void)
     App ::PropertyFont              ::init();
     App ::PropertyStringList        ::init();
     App ::PropertyLink              ::init();
+    App ::PropertyXLink             ::init();
     App ::PropertyLinkChild         ::init();
     App ::PropertyLinkGlobal        ::init();
     App ::PropertyLinkSub           ::init();
@@ -1292,6 +1388,10 @@ void Application::initTypes(void)
     App ::GeoFeatureGroupExtensionPython::init();
     App ::OriginGroupExtension          ::init();
     App ::OriginGroupExtensionPython    ::init();
+    App ::LinkBaseExtension             ::init();
+    App ::LinkBaseExtensionPython       ::init();
+    App ::LinkExtension                 ::init();
+    App ::LinkExtensionPython           ::init();
 
     // Document classes
     App ::TransactionalObject       ::init();
@@ -1319,6 +1419,11 @@ void Application::initTypes(void)
     App ::Line                      ::init();
     App ::Part                      ::init();
     App ::Origin                    ::init();
+    App ::Link                      ::init();
+    App ::LinkPython                ::init();
+    App ::LinkElement               ::init();
+    App ::LinkGroup                 ::init();
+    App ::LinkGroupPython           ::init();
 
     // Expression classes
     App ::Expression                ::init();
@@ -1548,7 +1653,6 @@ void Application::initApplication(void)
     try {
         Interpreter().runString(Base::ScriptFactory().ProduceScript("CMakeVariables"));
         Interpreter().runString(Base::ScriptFactory().ProduceScript("FreeCADInit"));
-        ObjectLabelObserver::instance();
     }
     catch (const Base::Exception& e) {
         Base::Console().Error("%s\n", e.what());
@@ -2481,79 +2585,3 @@ std::string Application::FindHomePath(const char* sCall)
 # error "std::string Application::FindHomePath(const char*) not implemented"
 #endif
 
-ObjectLabelObserver* ObjectLabelObserver::_singleton = 0;
-
-ObjectLabelObserver* ObjectLabelObserver::instance()
-{
-    if (!_singleton)
-        _singleton = new ObjectLabelObserver;
-    return _singleton;
-}
-
-void ObjectLabelObserver::destruct ()
-{
-    delete _singleton;
-    _singleton = 0;
-}
-
-void ObjectLabelObserver::slotRelabelObject(const App::DocumentObject& obj, const App::Property& prop)
-{
-    // observe only the Label property
-    if (&prop == &obj.Label) {
-        // have we processed this (or another?) object right now?
-        if (current) {
-            return;
-        }
-
-        std::string label = obj.Label.getValue();
-        App::Document* doc = obj.getDocument();
-        if (doc && !_hPGrp->GetBool("DuplicateLabels")) {
-            std::vector<std::string> objectLabels;
-            std::vector<App::DocumentObject*>::const_iterator it;
-            std::vector<App::DocumentObject*> objs = doc->getObjects();
-            bool match = false;
-
-            for (it = objs.begin();it != objs.end();++it) {
-                if (*it == &obj)
-                    continue; // don't compare object with itself
-                std::string objLabel = (*it)->Label.getValue();
-                if (!match && objLabel == label)
-                    match = true;
-                objectLabels.push_back(objLabel);
-            }
-
-            // make sure that there is a name conflict otherwise we don't have to do anything
-            if (match && !label.empty()) {
-                // remove number from end to avoid lengthy names
-                size_t lastpos = label.length()-1;
-                while (label[lastpos] >= 48 && label[lastpos] <= 57) {
-                    // if 'lastpos' becomes 0 then all characters are digits. In this case we use
-                    // the complete label again
-                    if (lastpos == 0) {
-                        lastpos = label.length()-1;
-                        break;
-                    }
-                    lastpos--;
-                }
-
-                label = label.substr(0, lastpos+1);
-                label = Base::Tools::getUniqueName(label, objectLabels, 3);
-                this->current = &obj;
-                const_cast<App::DocumentObject&>(obj).Label.setValue(label);
-                this->current = 0;
-            }
-        }
-    }
-}
-
-ObjectLabelObserver::ObjectLabelObserver() : current(0)
-{
-    App::GetApplication().signalChangedObject.connect(boost::bind
-        (&ObjectLabelObserver::slotRelabelObject, this, _1, _2));
-    _hPGrp = App::GetApplication().GetUserParameter().GetGroup("BaseApp");
-    _hPGrp = _hPGrp->GetGroup("Preferences")->GetGroup("Document");
-}
-
-ObjectLabelObserver::~ObjectLabelObserver()
-{
-}
