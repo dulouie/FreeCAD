@@ -71,6 +71,7 @@ App::DocumentObjectExecReturn* ShapeBinder::execute(void) {
             Part::TopoShape shape = ShapeBinder::buildShapeFromReferences(obj, subs);
             Base::Placement placement(shape.getTransform());
 
+<<<<<<< HEAD
             // get placement of actice body
             PartDesign::Body* activeBody = PartDesign::Body::findBodyOf(this);
             Base::Placement placementActiveBody = activeBody->Placement.getValue();
@@ -101,6 +102,27 @@ App::DocumentObjectExecReturn* ShapeBinder::execute(void) {
             }
             placement = placementActiveBody.inverse() * placementReference; 
 
+=======
+            // get placement of current body
+            PartDesign::Body* bodyShapebinder = PartDesign::Body::findBodyOf(this);
+            Base::Placement placementShapebinder = bodyShapebinder->Placement.getValue();
+
+            //get placement of selected reference and compute new placement
+            Base::Placement placementReference;
+            if (obj->getTypeId().isDerivedFrom(PartDesign::Body::getClassTypeId())){
+                placementReference = obj->Placement.getValue();
+                placement = placementShapebinder.inverse() * placementReference;   
+            }
+            else if (obj->getTypeId().isDerivedFrom(Part::Feature::getClassTypeId())){
+                PartDesign::Body* bodyReference = PartDesign::Body::findBodyOf(obj);
+                placementReference = bodyReference->Placement.getValue();
+                placement *= placementShapebinder.inverse() * placementReference;     
+            }
+            else {
+                throw Base::Exception("Shapbinder reference must be a Feature or Body.");
+            }
+            
+>>>>>>> d03bc9f4779833a124e03e9f6eb1d29ca9522dd3
             // make placement permanent
             if(wasExecuted==FALSE){
                 Placement.setValue(placement);
