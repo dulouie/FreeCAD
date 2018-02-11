@@ -71,25 +71,36 @@ App::DocumentObjectExecReturn* ShapeBinder::execute(void) {
             Part::TopoShape shape = ShapeBinder::buildShapeFromReferences(obj, subs);
             Base::Placement placement(shape.getTransform());
 
-            // get placement of current body
-            PartDesign::Body* bodyShapebinder = PartDesign::Body::findBodyOf(this);
-            Base::Placement placementShapebinder = bodyShapebinder->Placement.getValue();
+            // get placement of actice body
+            PartDesign::Body* activeBody = PartDesign::Body::findBodyOf(this);
+            Base::Placement placementActiveBody = activeBody->Placement.getValue();
 
             //get placement of selected reference and compute new placement
             Base::Placement placementReference;
-            if (obj->getTypeId().isDerivedFrom(PartDesign::Body::getClassTypeId())){
-                placementReference = obj->Placement.getValue();
-                placement = placementShapebinder.inverse() * placementReference;   
+
+            // is body?
+            if (obj->getTypeId() == PartDesign::Body::getClassTypeId()){
+                cout << "Body" << endl;
+                placementReference = obj->Placement.getValue();  
             }
+            // is part::feature ?
             else if (obj->getTypeId().isDerivedFrom(Part::Feature::getClassTypeId())){
-                PartDesign::Body* bodyReference = PartDesign::Body::findBodyOf(obj);
-                placementReference = bodyReference->Placement.getValue();
-                placement *= placementShapebinder.inverse() * placementReference;     
+                // is feature of a body?
+                if (PartDesign::Body::findBodyOf(obj)){
+                    cout << "Body::feature" << endl;
+                    PartDesign::Body* bodyReference = PartDesign::Body::findBodyOf(obj);
+                    placementReference = bodyReference->Placement.getValue();
+                }
+                else {
+                    cout << "Part:Feature" << endl;
+                    placementReference = obj->Placement.getValue(); 
+                }
             }
             else {
-                throw Base::Exception("Shapbinder reference must be a Feature or Body.");
+                throw Base::Exception("Shapbinder error.");
             }
-            
+            placement = placementActiveBody.inverse() * placementReference; 
+
             // make placement permanent
             if(wasExecuted==FALSE){
                 Placement.setValue(placement);
