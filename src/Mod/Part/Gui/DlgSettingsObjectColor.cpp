@@ -55,10 +55,6 @@ DlgSettingsObjectColor::~DlgSettingsObjectColor()
 
 void DlgSettingsObjectColor::saveSettings()
 {
-    if(checkRandomColor->isChecked()){
-        
-    }
-
     // Part
     DefaultShapeColor->onSave();
     checkRandomColor->onSave();
