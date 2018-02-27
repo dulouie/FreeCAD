@@ -346,7 +346,15 @@
   <tabstop>DefaultShapeLineWidth</tabstop>
   <tabstop>DefaultShapeLineColor</tabstop>
   <tabstop>BoundingBoxColor</tabstop>
+  <tabstop>checkRandomColor</tabstop>
  </tabstops>
  <resources/>
- <connections/>
+  <connections>
+  <connection>
+   <sender>checkRandomColor</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>DefaultShapeColor</receiver>
+   <slot>setDisabled(bool)</slot>
+  </connection>
+</connections>
 </ui>

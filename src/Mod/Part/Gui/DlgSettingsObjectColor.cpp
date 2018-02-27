@@ -42,6 +42,7 @@ DlgSettingsObjectColor::DlgSettingsObjectColor(QWidget* parent)
     : PreferencePage(parent)
 {
     this->setupUi(this);
+    this->DefaultShapeColor->setDisabled(this->checkRandomColor->isChecked());
 }
 
 /** 
@@ -54,6 +55,10 @@ DlgSettingsObjectColor::~DlgSettingsObjectColor()
 
 void DlgSettingsObjectColor::saveSettings()
 {
+    if(checkRandomColor->isChecked()){
+        
+    }
+
     // Part
     DefaultShapeColor->onSave();
     checkRandomColor->onSave();
@@ -64,10 +69,6 @@ void DlgSettingsObjectColor::saveSettings()
     BoundingBoxColor->onSave();
     // Annotations
     AnnotationTextColor->onSave();
-
-    if(checkRandomColor->isChecked()){
-        
-    }
 }
 
 void DlgSettingsObjectColor::loadSettings()
