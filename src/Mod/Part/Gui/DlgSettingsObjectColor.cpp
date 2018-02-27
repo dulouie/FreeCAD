@@ -28,6 +28,7 @@
 
 #include "DlgSettingsObjectColor.h"
 #include <Gui/PrefWidgets.h>
+#include <iostream>
 
 using namespace PartGui;
 
@@ -55,6 +56,7 @@ void DlgSettingsObjectColor::saveSettings()
 {
     // Part
     DefaultShapeColor->onSave();
+    checkRandomColor->onSave();
     DefaultShapeLineColor->onSave();
     DefaultShapeLineWidth->onSave();
     DefaultShapeVertexColor->onSave();
@@ -62,12 +64,17 @@ void DlgSettingsObjectColor::saveSettings()
     BoundingBoxColor->onSave();
     // Annotations
     AnnotationTextColor->onSave();
+
+    if(checkRandomColor->isChecked()){
+        
+    }
 }
 
 void DlgSettingsObjectColor::loadSettings()
 {
     // Part
     DefaultShapeColor->onRestore();
+    checkRandomColor->onRestore();
     DefaultShapeLineColor->onRestore();
     DefaultShapeLineWidth->onRestore();
     DefaultShapeVertexColor->onRestore();

@@ -56,6 +56,7 @@ public:
 
     // Display properties
     App::PropertyColor ShapeColor;
+    App::PropertyBool RandomColor;
     App::PropertyPercent Transparency;
     App::PropertyMaterial ShapeMaterial;
     App::PropertyBool BoundingBox;

@@ -78,8 +78,13 @@ ViewProviderGeometryObject::ViewProviderGeometryObject() : pcBoundSwitch(0),pcBo
 {
     ParameterGrp::handle hGrp = App::GetApplication().GetParameterGroupByPath("User parameter:BaseApp/Preferences/View");
 
+    ADD_PROPERTY(RandomColor,(true));
+
+    bool bRandomColor = hGrp->GetBool("randomColor", true);
+    RandomColor.setValue(bRandomColor);
+
     float fRed,fGrn,fBlu;
-    if(1){ // random box checked
+    if(bRandomColor){ // random box checked
         float fMax = (float)RAND_MAX;
         fRed = (float)rand()/fMax;
         fGrn = (float)rand()/fMax;
